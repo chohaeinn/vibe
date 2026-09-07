@@ -1,2 +1,1 @@
-name=requirements.txt
 streamlit>=1.38,<2
