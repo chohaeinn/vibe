@@ -4,800 +4,3449 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = Path(__file__).parent / "users.db"
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from PIL import Image, ImageDraw
+
+try:
+    from streamlit_drawable_canvas import st_canvas
+    CANVAS_OK = True
+except ImportError:
+    CANVAS_OK = False
+
+
+# =========================================================
+# 기본 설정
+# =========================================================
 
 st.set_page_config(
-    page_title="행사장 디자이너",
+    page_title="행사장 설계 AI",
     page_icon="🎪",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# -----------------------------
-# Database / authentication
-# -----------------------------
+DB_PATH = Path(__file__).parent / "users.db"
+
+CANVAS_W = 900
+CANVAS_H = 600
+
+
+# =========================================================
+# 기본 행사장 구역
+# =========================================================
+
+DEFAULT_ZONES = {
+    "① 웰컴존": {
+        "x": 7,
+        "y": 76,
+        "w": 22,
+        "h": 14,
+        "capacity": 70,
+        "kind": "welcome",
+    },
+
+    "② 메인존": {
+        "x": 34,
+        "y": 35,
+        "w": 38,
+        "h": 30,
+        "capacity": 230,
+        "kind": "main",
+    },
+
+    "③ 체험/콘텐츠존": {
+        "x": 7,
+        "y": 44,
+        "w": 23,
+        "h": 22,
+        "capacity": 100,
+        "kind": "content",
+    },
+
+    "④ 휴식존": {
+        "x": 7,
+        "y": 10,
+        "w": 26,
+        "h": 22,
+        "capacity": 110,
+        "kind": "rest",
+    },
+
+    "⑤ 포토존": {
+        "x": 76,
+        "y": 73,
+        "w": 18,
+        "h": 16,
+        "capacity": 90,
+        "kind": "photo",
+    },
+
+    "⑥ 운영존": {
+        "x": 76,
+        "y": 10,
+        "w": 18,
+        "h": 18,
+        "capacity": 60,
+        "kind": "ops",
+    },
+
+    "⑦ 푸드존": {
+        "x": 76,
+        "y": 36,
+        "w": 18,
+        "h": 26,
+        "capacity": 100,
+        "kind": "food",
+    },
+
+    "♿ 접근성 휴식/지원": {
+        "x": 35,
+        "y": 12,
+        "w": 18,
+        "h": 14,
+        "capacity": 45,
+        "kind": "access",
+    },
+}
+
+
+ZONE_COLORS = {
+    "welcome": (70, 160, 235),
+    "main": (245, 180, 55),
+    "content": (75, 195, 135),
+    "rest": (95, 155, 235),
+    "photo": (180, 115, 215),
+    "ops": (145, 145, 145),
+    "food": (245, 125, 70),
+    "access": (50, 190, 175),
+}
+
+
+# =========================================================
+# 로그인 / 회원가입
+# =========================================================
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    """)
+        """
+    )
+
     conn.commit()
+
     return conn
 
+
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        password.encode("utf-8")
+    ).hexdigest()
+
 
 def create_user(username: str, password: str):
+
     username = username.strip()
+
     if not username or not password:
         return False, "아이디와 비밀번호를 입력해주세요."
+
     if len(username) < 3:
         return False, "아이디는 3자 이상 입력해주세요."
+
     if len(password) < 6:
         return False, "비밀번호는 6자 이상 입력해주세요."
 
     conn = get_conn()
+
     try:
+
         conn.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-            (username, hash_password(password), datetime.now().isoformat(timespec="seconds")),
+            """
+            INSERT INTO users
+            (username, password_hash, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                username,
+                hash_password(password),
+                datetime.now().isoformat(
+                    timespec="seconds"
+                ),
+            ),
         )
+
         conn.commit()
+
         return True, "회원가입이 완료되었습니다."
+
     except sqlite3.IntegrityError:
+
         return False, "이미 존재하는 아이디입니다."
+
     finally:
+
         conn.close()
 
+
 def authenticate(username: str, password: str) -> bool:
+
     conn = get_conn()
+
     row = conn.execute(
-        "SELECT password_hash FROM users WHERE username = ?",
+        """
+        SELECT password_hash
+        FROM users
+        WHERE username = ?
+        """,
         (username.strip(),),
     ).fetchone()
+
     conn.close()
-    return bool(row and row[0] == hash_password(password))
 
-def logout():
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.rerun()
-
-# -----------------------------
-# Recommendation engine
-# -----------------------------
-def recommend_design(event_type, people, duration, age_group, mood, fee, place):
-    if people <= 50:
-        scale = "소규모"
-        area = f"약 {max(60, people * 2)}~{max(90, people * 3)}㎡"
-    elif people <= 200:
-        scale = "중규모"
-        area = f"약 {people * 1.5:.0f}~{people * 2.2:.0f}㎡"
-    else:
-        scale = "대규모"
-        area = f"약 {people * 1.2:.0f}~{people * 1.8:.0f}㎡"
-
-    if duration <= 2:
-        flow = "입장 → 핵심 프로그램 → 자유 관람 → 퇴장"
-    elif duration <= 5:
-        flow = "입장 → 오프닝 → 메인 프로그램 → 휴식/체험 → 클로징"
-    else:
-        flow = "입장 → 오프닝 → 세션/체험 → 식음/휴식 → 메인 프로그램 → 클로징"
-
-    if place == "실내":
-        venue = "천장고와 기둥 위치를 먼저 확인하고, 무대·객석·체험존을 중앙 동선 기준으로 배치합니다."
-        weather = "실내이므로 우천 대응 부담이 낮고, 조명·음향 연출에 집중하기 좋습니다."
-    else:
-        venue = "그늘·휴식존·화장실·전기·우천 대피 동선을 입구와 가까운 위치에 우선 배치합니다."
-        weather = "야외 행사이므로 우천 및 폭염/한파 대비 플랜 B 공간을 반드시 확보합니다."
-
-    if "가족" in age_group or "어린이" in age_group:
-        safety = "유아·어린이 이동을 고려해 모서리 없는 가구, 넓은 통로, 보호자 대기존을 확보합니다."
-    elif "청소년" in age_group:
-        safety = "친구 단위 이동이 많으므로 포토존·체험존을 분산하고 혼잡 구간을 넓게 잡습니다."
-    elif "중장년" in age_group:
-        safety = "좌석 비중과 휴식 공간을 늘리고, 안내 표지와 화장실 접근성을 높입니다."
-    else:
-        safety = "참가자 체류 시간을 고려해 휴식·대기·포토존을 적절히 분산합니다."
-
-    mood_map = {
-        "세련되고 모던한": "화이트/그레이 계열 베이스에 간접조명과 미니멀 사인물을 사용합니다.",
-        "활기차고 축제 같은": "강한 포인트 컬러, 스트링 조명, 대형 포토월과 참여형 체험존을 활용합니다.",
-        "따뜻하고 감성적인": "우드 소재, 웜톤 조명, 패브릭 장식과 작은 휴식 공간을 배치합니다.",
-        "고급스럽고 프리미엄한": "여백을 넓게 두고 메탈·블랙·뉴트럴 소재와 집중 조명을 사용합니다.",
-        "자연스럽고 편안한": "식물, 우드, 자연 소재와 낮은 조도의 편안한 휴식존을 구성합니다.",
-    }
-
-    budget_note = (
-        "입장료가 낮은 편이므로 체험형 시설은 최소화하고 공간 연출과 동선 효율에 집중합니다."
-        if fee < 10000 else
-        "입장료가 중간 수준이므로 핵심 체험 1~2개와 포토존을 결합하는 구성이 적합합니다."
-        if fee < 30000 else
-        "입장료가 높은 편이므로 프리미엄 웰컴존, 예약형 프로그램, 굿즈/라운지 등을 추가하기 좋습니다."
+    return bool(
+        row
+        and row[0] == hash_password(password)
     )
 
-    zones = [
-        ("① 웰컴존", "입구", "등록/티켓 확인, 행사 안내, 첫인상 연출"),
-        ("② 메인존", "중앙", f"{event_type}의 핵심 프로그램 진행"),
-        ("③ 체험/콘텐츠존", "메인존 주변", "참가자의 체류시간을 늘리는 참여형 콘텐츠"),
-        ("④ 휴식존", "동선 가장자리", "대기·휴식·음료·소셜 공간"),
-        ("⑤ 포토존", "입구 또는 메인존 인근", "행사 분위기를 시각적으로 보여주는 SNS 콘텐츠 공간"),
-        ("⑥ 운영존", "후면/측면", "스태프·장비·물품 관리"),
-    ]
 
-    if people > 500:
-        crowd = "500명 이상이므로 입·퇴장 동선을 분리하고, 병목이 생기기 쉬운 구간에 안내 인력을 배치하세요."
-    elif people > 200:
-        crowd = "200명 이상이므로 메인존 앞 대기열과 체험존별 대기 공간을 별도로 확보하세요."
-    else:
-        crowd = "참가자 규모가 비교적 작아 핵심 공간을 서로 가깝게 묶어 몰입감 있는 구성이 가능합니다."
+def logout():
 
-    return {
-        "scale": scale,
-        "area": area,
-        "flow": flow,
-        "venue": venue,
-        "weather": weather,
-        "safety": safety,
-        "mood": mood_map.get(mood, "행사 목적에 맞는 통일감 있는 색상과 사인 시스템을 사용합니다."),
-        "budget": budget_note,
-        "crowd": crowd,
-        "zones": zones,
-    }
+    st.session_state.logged_in = False
+    st.session_state.username = ""
 
-# -----------------------------
-# Session state
-# -----------------------------
+    st.rerun()
+
+
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
 if "username" not in st.session_state:
     st.session_state.username = ""
 
-# -----------------------------
-# Login / Signup screen
-# -----------------------------
-if not st.session_state.logged_in:
-    st.title("🎪 행사장 디자이너")
-    st.caption("사용자의 행사 조건을 바탕으로 공간 구성과 운영 아이디어를 제안합니다.")
 
-    login_tab, signup_tab = st.tabs(["로그인", "회원가입"])
+# =========================================================
+# 행사 기획 추천
+# =========================================================
 
-    with login_tab:
-        st.subheader("로그인")
-        with st.form("login_form"):
-            username = st.text_input("아이디")
-            password = st.text_input("비밀번호", type="password")
-            submitted = st.form_submit_button("로그인", use_container_width=True)
+def recommend_design(
+    event_type,
+    people,
+    duration,
+    age_group,
+    mood,
+    fee,
+    place,
+):
 
-        if submitted:
-            if authenticate(username, password):
-                st.session_state.logged_in = True
-                st.session_state.username = username.strip()
-                st.rerun()
-            else:
-                st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+    # 행사 규모
+    if people <= 50:
 
-    with signup_tab:
-        st.subheader("회원가입")
-        with st.form("signup_form"):
-            new_username = st.text_input("새 아이디")
-            new_password = st.text_input("새 비밀번호", type="password")
-            new_password2 = st.text_input("비밀번호 확인", type="password")
-            submitted = st.form_submit_button("회원가입", use_container_width=True)
+        scale = "소규모"
 
-        if submitted:
-            if new_password != new_password2:
-                st.error("비밀번호가 일치하지 않습니다.")
-            else:
-                ok, message = create_user(new_username, new_password)
-                (st.success if ok else st.error)(message)
+        area = (
+            f"약 {max(60, people * 2)}"
+            f"~{max(90, people * 3)}㎡"
+        )
 
-    st.info("💡 대회/프로토타입용으로 바로 실행할 수 있는 기본 회원가입 기능입니다.")
-    st.stop()
+    elif people <= 200:
 
-# -----------------------------
-# Venue simulation helpers
-# -----------------------------
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
+        scale = "중규모"
 
+        area = (
+            f"약 {people * 1.5:.0f}"
+            f"~{people * 2.2:.0f}㎡"
+        )
 
-VENUE_ZONES = {
-    "① 웰컴존": {"x": 7, "y": 73, "w": 22, "h": 16, "capacity": 70, "fill": "rgba(76, 175, 239, 0.34)"},
-    "② 메인존": {"x": 35, "y": 31, "w": 36, "h": 34, "capacity": 230, "fill": "rgba(255, 193, 7, 0.30)"},
-    "③ 체험/콘텐츠존": {"x": 7, "y": 42, "w": 22, "h": 22, "capacity": 100, "fill": "rgba(76, 200, 140, 0.30)"},
-    "④ 휴식존": {"x": 7, "y": 10, "w": 26, "h": 20, "capacity": 110, "fill": "rgba(115, 170, 255, 0.28)"},
-    "⑤ 포토존": {"x": 76, "y": 72, "w": 18, "h": 17, "capacity": 90, "fill": "rgba(190, 120, 230, 0.30)"},
-    "⑥ 운영존": {"x": 76, "y": 10, "w": 18, "h": 20, "capacity": 60, "fill": "rgba(180, 180, 180, 0.24)"},
-    "푸드존": {"x": 76, "y": 37, "w": 18, "h": 25, "capacity": 100, "fill": "rgba(255, 130, 70, 0.28)"},
-}
-
-ZONE_CENTER = {
-    name: (z["x"] + z["w"] / 2, z["y"] + z["h"] / 2)
-    for name, z in VENUE_ZONES.items()
-}
-
-
-def _weighted_choice(rng, choices, weights):
-    weights = np.array(weights, dtype=float)
-    weights = np.clip(weights, 0, None)
-    weights = weights / weights.sum()
-    return rng.choice(choices, p=weights)
-
-
-def target_zone(event_type, age_group, u, minute, weights, rng, participant_id):
-    """교육/기획용으로 단순화한 참가자 이동 모델."""
-    # 입장 직후에는 웰컴존을 중심으로 분포
-    if minute <= 20:
-        if u < 0.70:
-            return "① 웰컴존"
-        if u < 0.84:
-            return "⑤ 포토존"
-        return "푸드존"
-
-    # 공연/핵심 프로그램 집중 시간
-    if minute <= 120:
-        if event_type in ["콘서트", "페스티벌"]:
-            choices = ["② 메인존", "⑤ 포토존", "④ 휴식존", "푸드존"]
-            probs = [0.72, 0.10, 0.09, 0.09]
-        else:
-            choices = ["② 메인존", "③ 체험/콘텐츠존", "④ 휴식존", "⑤ 포토존", "푸드존"]
-            probs = [0.48, 0.23, 0.12, 0.07, 0.10]
-
-        # 사용자가 조정한 공간 활성도를 반영
-        adjusted = []
-        for zone, p in zip(choices, probs):
-            adjusted.append(p * weights.get(zone, 1.0))
-        return _weighted_choice(rng, choices, adjusted)
-
-    # 중후반에는 프로그램에 따라 분산
-    phase = int((minute - 120) // 20) % 4
-    if phase == 0:
-        choices = ["② 메인존", "③ 체험/콘텐츠존", "④ 휴식존", "⑤ 포토존", "푸드존"]
-        probs = [0.42, 0.18, 0.13, 0.12, 0.15]
-    elif phase == 1:
-        choices = ["② 메인존", "③ 체험/콘텐츠존", "④ 휴식존", "⑤ 포토존", "푸드존"]
-        probs = [0.30, 0.22, 0.20, 0.12, 0.16]
-    elif phase == 2:
-        choices = ["② 메인존", "③ 체험/콘텐츠존", "④ 휴식존", "⑤ 포토존", "푸드존"]
-        probs = [0.34, 0.14, 0.12, 0.24, 0.12]
     else:
-        choices = ["② 메인존", "③ 체험/콘텐츠존", "④ 휴식존", "⑤ 포토존", "푸드존"]
-        probs = [0.26, 0.18, 0.15, 0.16, 0.25]
 
-    adjusted = [p * weights.get(zone, 1.0) for zone, p in zip(choices, probs)]
-    return _weighted_choice(rng, choices, adjusted)
+        scale = "대규모"
 
-
-def simulate_agents(participant_count, current_minute, event_type, age_group, weights):
-    # 고정 시드라서 슬라이더를 움직여도 결과가 지나치게 흔들리지 않음
-    rng = np.random.default_rng(20260907)
-    u = rng.random(participant_count)
-    personal = rng.random(participant_count)
-
-    prev_minute = max(0, current_minute - 15)
-    positions = np.zeros((participant_count, 2), dtype=float)
-    destinations = []
-
-    for i in range(participant_count):
-        now_zone = target_zone(
-            event_type, age_group, u[i], current_minute, weights, rng, i
+        area = (
+            f"약 {people * 1.2:.0f}"
+            f"~{people * 1.8:.0f}㎡"
         )
-        prev_zone = target_zone(
-            event_type, age_group, u[i], prev_minute, weights, rng, i + 10000
+
+    # 동선
+    if duration <= 2:
+
+        flow = (
+            "입장 → 핵심 프로그램 → "
+            "자유 관람 → 퇴장"
         )
-        destinations.append(now_zone)
 
-        start = np.array(ZONE_CENTER[prev_zone], dtype=float)
-        end = np.array(ZONE_CENTER[now_zone], dtype=float)
+    elif duration <= 5:
 
-        # 이동 중인 사람과 도착한 사람을 혼합
-        phase = (current_minute - prev_minute) / 15.0
-        phase = np.clip(phase, 0.0, 1.0)
-        travel_start = 0.18 + personal[i] * 0.20
-        t = np.clip((phase - travel_start) / (1 - travel_start), 0.0, 1.0)
-        t = t * t * (3 - 2 * t)
+        flow = (
+            "입장 → 오프닝 → 메인 프로그램 → "
+            "휴식/체험 → 클로징"
+        )
 
-        pos = start * (1 - t) + end * t
+    else:
 
-        # 구역 내부 분산
-        jitter_scale = 1.4
-        pos += rng.normal(0, jitter_scale, 2)
+        flow = (
+            "입장 → 오프닝 → 세션/체험 → "
+            "식음/휴식 → 메인 프로그램 → 클로징"
+        )
 
-        # 행사장 밖으로 나가지 않게 제한
-        pos[0] = np.clip(pos[0], 2, 98)
-        pos[1] = np.clip(pos[1], 2, 98)
-        positions[i] = pos
+    # 장소
+    if place == "실내":
 
-    return positions, np.array(destinations)
+        venue = (
+            "천장고·기둥·출입구 위치를 먼저 확인하고 "
+            "무대·객석·체험존을 중앙 동선 기준으로 배치합니다."
+        )
+
+        weather = (
+            "실내이므로 우천 대응 부담이 낮고 "
+            "조명·음향 연출에 집중하기 좋습니다."
+        )
+
+    else:
+
+        venue = (
+            "그늘·휴식존·화장실·전기·우천 대피 동선을 "
+            "입구와 가까운 위치에 우선 배치합니다."
+        )
+
+        weather = (
+            "야외 행사이므로 우천 및 폭염/한파 대비 "
+            "플랜 B를 확보합니다."
+        )
+
+    # 안전
+    if (
+        "가족" in age_group
+        or "어린이" in age_group
+    ):
+
+        safety = (
+            "보호자 대기존, 넓은 통로, "
+            "안전한 가구 배치를 우선합니다."
+        )
+
+    elif "청소년" in age_group:
+
+        safety = (
+            "친구 단위 이동이 많으므로 "
+            "포토존·체험존을 분산합니다."
+        )
+
+    elif (
+        "중장년" in age_group
+        or "40~60" in age_group
+    ):
+
+        safety = (
+            "좌석·휴식 공간과 안내 표지, "
+            "화장실 접근성을 높입니다."
+        )
+
+    else:
+
+        safety = (
+            "휴식·대기·포토존을 "
+            "주 동선과 적절히 분산합니다."
+        )
+
+    mood_map = {
+
+        "세련되고 모던한":
+            "미니멀 사인·간접조명·뉴트럴 컬러를 사용합니다.",
+
+        "활기차고 축제 같은":
+            "포인트 컬러·스트링 조명·대형 포토월을 활용합니다.",
+
+        "따뜻하고 감성적인":
+            "우드·웜톤 조명·패브릭 장식을 사용합니다.",
+
+        "고급스럽고 프리미엄한":
+            "넓은 여백·메탈·블랙·집중 조명을 사용합니다.",
+
+        "자연스럽고 편안한":
+            "식물·우드·자연 소재와 편안한 휴식 공간을 구성합니다.",
+    }
+
+    budget = (
+
+        "저비용 참여 콘텐츠와 동선 효율에 집중합니다."
+
+        if fee < 10000
+
+        else
+
+        "핵심 체험 1~2개와 포토존을 결합하기 좋습니다."
+
+        if fee < 30000
+
+        else
+
+        "프리미엄 웰컴존·예약형 프로그램·라운지 등을 추가하기 좋습니다."
+    )
+
+    zones = [
+
+        (
+            "① 웰컴존",
+            "입구",
+            "등록·티켓 확인·행사 안내",
+        ),
+
+        (
+            "② 메인존",
+            "중앙",
+            f"{event_type} 핵심 프로그램",
+        ),
+
+        (
+            "③ 체험/콘텐츠존",
+            "메인존 주변",
+            "참가형 콘텐츠",
+        ),
+
+        (
+            "④ 휴식존",
+            "동선 가장자리",
+            "대기·휴식·음료",
+        ),
+
+        (
+            "⑤ 포토존",
+            "입구 또는 메인존 인근",
+            "사진·SNS 콘텐츠",
+        ),
+
+        (
+            "⑥ 운영존",
+            "후면/측면",
+            "스태프·장비 관리",
+        ),
+    ]
+
+    if people > 500:
+
+        crowd = (
+            "대규모 행사이므로 입·퇴장 동선을 분리하고 "
+            "병목 구간에 안내 인력을 배치하세요."
+        )
+
+    elif people > 200:
+
+        crowd = (
+            "메인존 앞 대기열과 체험존별 대기 공간을 "
+            "별도로 확보하세요."
+        )
+
+    else:
+
+        crowd = (
+            "핵심 공간을 서로 가깝게 묶어 "
+            "몰입감 있는 구성이 가능합니다."
+        )
+
+    return {
+
+        "scale": scale,
+
+        "area": area,
+
+        "flow": flow,
+
+        "venue": venue,
+
+        "weather": weather,
+
+        "safety": safety,
+
+        "mood": mood_map.get(
+            mood,
+            "행사 목적에 맞는 통일감 있는 공간을 구성합니다.",
+        ),
+
+        "budget": budget,
+
+        "crowd": crowd,
+
+        "zones": zones,
+    }
 
 
-def make_density_grid(points, grid_size=65, sigma=4.8):
-    xs = np.linspace(0, 100, grid_size)
-    ys = np.linspace(0, 100, grid_size)
-    X, Y = np.meshgrid(xs, ys)
-    heat = np.zeros_like(X, dtype=float)
+# =========================================================
+# 공통 유틸
+# =========================================================
 
-    # 메모리 사용량을 줄이기 위해 배치 계산
-    for start in range(0, len(points), 250):
-        batch = points[start:start + 250]
-        dx = X[:, :, None] - batch[:, 0][None, None, :]
-        dy = Y[:, :, None] - batch[:, 1][None, None, :]
-        heat += np.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma)).sum(axis=2)
+def clean_zones(zones):
 
-    return xs, ys, heat
+    if not isinstance(zones, dict):
+        zones = {}
 
-
-def zone_occupancy(points):
     result = {}
-    for zone_name, zone in VENUE_ZONES.items():
-        cx, cy = ZONE_CENTER[zone_name]
-        # 각 존 중심 주변의 간단한 영향 반경으로 예상 체류 인원 계산
-        radius = max(7.5, min(zone["w"], zone["h"]) * 0.55)
-        dist = np.sqrt((points[:, 0] - cx) ** 2 + (points[:, 1] - cy) ** 2)
-        result[zone_name] = int((dist <= radius).sum())
+
+    for name, default in DEFAULT_ZONES.items():
+
+        z = zones.get(name, {})
+
+        result[name] = {
+
+            "x": float(
+                z.get("x", default["x"])
+            ),
+
+            "y": float(
+                z.get("y", default["y"])
+            ),
+
+            "w": float(
+                z.get("w", default["w"])
+            ),
+
+            "h": float(
+                z.get("h", default["h"])
+            ),
+
+            "capacity": int(
+                z.get(
+                    "capacity",
+                    default["capacity"],
+                )
+            ),
+
+            "kind": z.get(
+                "kind",
+                default["kind"],
+            ),
+        }
+
     return result
 
 
-def build_floorplan(
-    positions,
-    occupancy,
-    event_type,
-    show_people=True,
-    show_heatmap=True,
-    show_paths=True,
-):
-    xs, ys, heat = make_density_grid(positions)
+def centers(zones):
 
-    fig = go.Figure()
+    return {
 
-    if show_heatmap:
-        fig.add_trace(
-            go.Heatmap(
-                x=xs,
-                y=ys,
-                z=heat,
-                colorscale=[
-                    [0.00, "rgb(30, 80, 170)"],
-                    [0.25, "rgb(55, 160, 220)"],
-                    [0.50, "rgb(95, 200, 125)"],
-                    [0.72, "rgb(245, 220, 70)"],
-                    [0.88, "rgb(245, 140, 40)"],
-                    [1.00, "rgb(215, 45, 35)"],
-                ],
-                opacity=0.48,
-                colorbar=dict(title="밀집도"),
-                hoverinfo="skip",
-                name="혼잡도",
-            )
+        name: (
+            z["x"] + z["w"] / 2,
+            z["y"] + z["h"] / 2,
         )
 
-    if show_paths:
-        path_pairs = [
-            ("① 웰컴존", "② 메인존"),
-            ("② 메인존", "⑤ 포토존"),
-            ("② 메인존", "④ 휴식존"),
-            ("④ 휴식존", "푸드존"),
-            ("② 메인존", "③ 체험/콘텐츠존"),
-        ]
-        for a, b in path_pairs:
-            ax, ay = ZONE_CENTER[a]
-            bx, by = ZONE_CENTER[b]
-            fig.add_annotation(
-                x=bx,
-                y=by,
-                ax=ax,
-                ay=ay,
-                xref="x",
-                yref="y",
-                axref="x",
-                ayref="y",
-                showarrow=True,
-                arrowhead=2,
-                arrowsize=1,
-                arrowwidth=2,
-                arrowcolor="rgba(255,255,255,0.62)",
-            )
-
-    for zone_name, zone in VENUE_ZONES.items():
-        fig.add_shape(
-            type="rect",
-            x0=zone["x"],
-            y0=zone["y"],
-            x1=zone["x"] + zone["w"],
-            y1=zone["y"] + zone["h"],
-            line=dict(color="white", width=2),
-            fillcolor=zone["fill"],
-        )
-
-        count = occupancy.get(zone_name, 0)
-        capacity = zone["capacity"]
-        percent = count / capacity * 100 if capacity else 0
-        label = f"<b>{zone_name}</b><br>{count}명 / {capacity}명<br>{percent:.0f}%"
-
-        fig.add_annotation(
-            x=zone["x"] + zone["w"] / 2,
-            y=zone["y"] + zone["h"] / 2,
-            text=label,
-            showarrow=False,
-            font=dict(size=12, color="white"),
-            align="center",
-        )
-
-    if show_people:
-        fig.add_trace(
-            go.Scatter(
-                x=positions[:, 0],
-                y=positions[:, 1],
-                mode="markers",
-                marker=dict(
-                    size=5,
-                    color="white",
-                    opacity=0.68,
-                    line=dict(width=0.5, color="rgba(0,0,0,0.25)"),
-                ),
-                name="참가자",
-                hovertemplate="참가자 위치<br>x=%{x:.1f}, y=%{y:.1f}<extra></extra>",
-            )
-        )
-
-    # 무대 표시
-    if event_type in ["콘서트", "페스티벌"]:
-        fig.add_shape(
-            type="rect",
-            x0=45,
-            y0=55,
-            x1=61,
-            y1=61,
-            line=dict(color="white", width=2),
-            fillcolor="rgba(20,20,20,0.55)",
-        )
-        fig.add_annotation(
-            x=53,
-            y=58,
-            text="<b>MAIN STAGE 🎤</b>",
-            showarrow=False,
-            font=dict(size=12, color="white"),
-        )
-
-    fig.update_layout(
-        height=650,
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(17,20,27,1)",
-        xaxis=dict(range=[0, 100], visible=False, fixedrange=True),
-        yaxis=dict(
-            range=[0, 100],
-            visible=False,
-            fixedrange=True,
-            scaleanchor="x",
-            scaleratio=1,
-        ),
-        showlegend=False,
-    )
-    return fig
-
-
-# -----------------------------
-# Main app
-# -----------------------------
-with st.sidebar:
-    st.success(f"👤 {st.session_state.username}님")
-    if st.button("로그아웃", use_container_width=True):
-        logout()
-
-st.title("🎪 행사장 설계 AI")
-st.write("행사 정보를 입력하면 **행사 콘셉트, 공간 구성, 동선, 운영 포인트**를 제안하고, 아래에서 실제 평면도와 참가자 흐름을 시뮬레이션합니다.")
-
-st.markdown("---")
-
-left, right = st.columns([1, 1])
-
-with left:
-    st.subheader("1. 행사 기본 정보")
-    event_type = st.selectbox(
-        "행사장의 유형",
-        ["콘서트", "페스티벌", "전시회", "박람회", "기업 행사", "네트워킹 행사", "플리마켓", "팝업스토어", "세미나/컨퍼런스", "기타"],
-    )
-    people = st.number_input(
-        "예상 인원수", min_value=10, max_value=10000, value=200, step=10
-    )
-    duration = st.number_input(
-        "진행 시간 (시간)", min_value=0.5, max_value=24.0, value=4.0, step=0.5
-    )
-    age_group = st.selectbox(
-        "예상 연령대",
-        ["어린이 중심", "청소년 중심", "20~30대 중심", "30~40대 중심", "40~60대 중심", "전 연령대 / 가족", "혼합 연령대"],
-    )
-
-with right:
-    st.subheader("2. 원하는 공간 방향")
-    mood = st.selectbox(
-        "원하는 분위기",
-        ["세련되고 모던한", "활기차고 축제 같은", "따뜻하고 감성적인", "고급스럽고 프리미엄한", "자연스럽고 편안한"],
-    )
-    fee = st.number_input(
-        "예상 입장료 (원)", min_value=0, max_value=1000000, value=15000, step=1000
-    )
-    place = st.radio("행사 장소", ["실내", "실외"], horizontal=True)
-
-    st.markdown("### 3. 설계하기")
-    generate = st.button(
-        "✨ 행사장 설계안 만들기",
-        type="primary",
-        use_container_width=True,
-    )
-
-# 결과를 세션에 저장해서 다른 시각화 컨트롤을 움직여도 설계안이 유지되도록 함
-if generate:
-    st.session_state.design_result = recommend_design(
-        event_type, int(people), float(duration), age_group, mood, int(fee), place
-    )
-    st.session_state.design_inputs = {
-        "event_type": event_type,
-        "people": int(people),
-        "duration": float(duration),
-        "age_group": age_group,
-        "mood": mood,
-        "fee": int(fee),
-        "place": place,
+        for name, z in zones.items()
     }
 
-if "design_result" not in st.session_state:
-    st.markdown(
-        """
-        ### 👋 이렇게 사용하세요
-        1. 행사 유형과 예상 인원을 입력합니다.
-        2. 원하는 분위기와 입장료를 선택합니다.
-        3. 실내/실외를 선택합니다.
-        4. **행사장 설계안 만들기** 버튼을 누르면 공간 구성이 생성됩니다.
-        5. 생성 후 **시뮬레이션** 탭에서 참가자 이동과 혼잡도를 확인합니다.
-        """
+
+def weighted_choice(
+    rng,
+    choices,
+    weights,
+):
+
+    p = np.asarray(
+        weights,
+        dtype=float,
     )
-    st.info("💡 이제 결과를 글로만 보는 대신, 실제 2D 행사장 평면도에서 참가자 흐름과 히트맵을 확인할 수 있습니다.")
+
+    p = np.clip(
+        p,
+        0.001,
+        None,
+    )
+
+    p /= p.sum()
+
+    return rng.choice(
+        choices,
+        p=p,
+    )
+
+
+# =========================================================
+# 참가자 이동 시뮬레이션
+# =========================================================
+
+def target_zone(
+    event_type,
+    u,
+    minute,
+    weights,
+    needs,
+    rng,
+):
+
+    # 입장
+    if minute <= 20:
+
+        choices = [
+
+            "① 웰컴존",
+
+            "⑤ 포토존",
+
+            "⑦ 푸드존",
+
+            "♿ 접근성 휴식/지원",
+        ]
+
+        probs = [
+            0.68,
+            0.14,
+            0.12,
+            0.06,
+        ]
+
+        return weighted_choice(
+            rng,
+            choices,
+            probs,
+        )
+
+    # 초반 주요 프로그램
+    if minute <= 120:
+
+        if event_type in [
+            "콘서트",
+            "페스티벌",
+        ]:
+
+            choices = [
+
+                "② 메인존",
+
+                "⑤ 포토존",
+
+                "④ 휴식존",
+
+                "⑦ 푸드존",
+
+                "♿ 접근성 휴식/지원",
+            ]
+
+            probs = [
+                0.68,
+                0.10,
+                0.08,
+                0.08,
+                0.06,
+            ]
+
+        else:
+
+            choices = [
+
+                "② 메인존",
+
+                "③ 체험/콘텐츠존",
+
+                "④ 휴식존",
+
+                "⑤ 포토존",
+
+                "⑦ 푸드존",
+
+                "♿ 접근성 휴식/지원",
+            ]
+
+            probs = [
+                0.43,
+                0.23,
+                0.12,
+                0.08,
+                0.09,
+                0.05,
+            ]
+
+    # 중후반
+    else:
+
+        phase = int(
+            (minute - 120) // 20
+        ) % 4
+
+        choices = [
+
+            "② 메인존",
+
+            "③ 체험/콘텐츠존",
+
+            "④ 휴식존",
+
+            "⑤ 포토존",
+
+            "⑦ 푸드존",
+
+            "♿ 접근성 휴식/지원",
+        ]
+
+        phases = [
+
+            [
+                0.40,
+                0.18,
+                0.12,
+                0.11,
+                0.14,
+                0.05,
+            ],
+
+            [
+                0.30,
+                0.21,
+                0.18,
+                0.12,
+                0.14,
+                0.05,
+            ],
+
+            [
+                0.33,
+                0.13,
+                0.12,
+                0.25,
+                0.12,
+                0.05,
+            ],
+
+            [
+                0.27,
+                0.17,
+                0.14,
+                0.14,
+                0.23,
+                0.05,
+            ],
+        ]
+
+        probs = phases[phase]
+
+    adjusted = []
+
+    for zone, p in zip(
+        choices,
+        probs,
+    ):
+
+        modifier = weights.get(
+            zone,
+            1.0,
+        )
+
+        if (
+            zone
+            in [
+                "④ 휴식존",
+                "♿ 접근성 휴식/지원",
+            ]
+            and needs
+        ):
+            modifier *= 1.20
+
+        adjusted.append(
+            p * modifier
+        )
+
+    return weighted_choice(
+        rng,
+        choices,
+        adjusted,
+    )
+
+
+def simulate_agents(
+    count,
+    minute,
+    event_type,
+    zones,
+    weights,
+    needs,
+):
+
+    rng = np.random.default_rng(
+        20260907
+    )
+
+    u = rng.random(count)
+
+    personal = rng.random(count)
+
+    c = centers(zones)
+
+    prev_minute = max(
+        0,
+        minute - 15,
+    )
+
+    positions = np.zeros(
+        (count, 2)
+    )
+
+    for i in range(count):
+
+        now = target_zone(
+            event_type,
+            u[i],
+            minute,
+            weights,
+            needs,
+            rng,
+        )
+
+        prev = target_zone(
+            event_type,
+            u[i],
+            prev_minute,
+            weights,
+            needs,
+            rng,
+        )
+
+        start = np.array(
+            c[prev],
+            dtype=float,
+        )
+
+        end = np.array(
+            c[now],
+            dtype=float,
+        )
+
+        t = np.clip(
+            (minute - prev_minute)
+            / 15.0,
+            0,
+            1,
+        )
+
+        t = np.clip(
+            (
+                t
+                - 0.18
+                - personal[i] * 0.18
+            )
+            / 0.64,
+            0,
+            1,
+        )
+
+        t = (
+            t
+            * t
+            * (3 - 2 * t)
+        )
+
+        pos = (
+            start * (1 - t)
+            + end * t
+        )
+
+        pos += rng.normal(
+            0,
+            1.7,
+            2,
+        )
+
+        pos[0] = np.clip(
+            pos[0],
+            1,
+            99,
+        )
+
+        pos[1] = np.clip(
+            pos[1],
+            1,
+            99,
+        )
+
+        positions[i] = pos
+
+    return positions
+
+
+# =========================================================
+# 밀집도
+# =========================================================
+
+def zone_occupancy(
+    points,
+    zones,
+):
+
+    result = {}
+
+    for name, z in zones.items():
+
+        cx = (
+            z["x"]
+            + z["w"] / 2
+        )
+
+        cy = (
+            z["y"]
+            + z["h"] / 2
+        )
+
+        rx = max(
+            5,
+            z["w"] * 0.52,
+        )
+
+        ry = max(
+            5,
+            z["h"] * 0.52,
+        )
+
+        distance = (
+
+            (
+                points[:, 0] - cx
+            ) / rx
+
+        ) ** 2 + (
+
+            (
+                points[:, 1] - cy
+            ) / ry
+
+        ) ** 2
+
+        result[name] = int(
+            (
+                distance <= 1
+            ).sum()
+        )
+
+    return result
+
+
+def heatmap(
+    points,
+    grid=75,
+    sigma=4.5,
+):
+
+    xs = np.linspace(
+        0,
+        100,
+        grid,
+    )
+
+    ys = np.linspace(
+        0,
+        100,
+        grid,
+    )
+
+    X, Y = np.meshgrid(
+        xs,
+        ys,
+    )
+
+    H = np.zeros_like(X)
+
+    for start in range(
+        0,
+        len(points),
+        250,
+    ):
+
+        batch = points[
+            start : start + 250
+        ]
+
+        dx = (
+            X[:, :, None]
+            - batch[:, 0]
+            [None, None, :]
+        )
+
+        dy = (
+            Y[:, :, None]
+            - batch[:, 1]
+            [None, None, :]
+        )
+
+        H += np.exp(
+            -(
+                dx * dx
+                + dy * dy
+            )
+            / (
+                2
+                * sigma
+                * sigma
+            )
+        ).sum(
+            axis=2
+        )
+
+    return xs, ys, H
+
+
+# =========================================================
+# 드래그형 배치
+# =========================================================
+
+def canvas_json(zones):
+
+    objects = []
+
+    for name, z in zones.items():
+
+        x = (
+            z["x"]
+            / 100
+            * CANVAS_W
+        )
+
+        y = (
+            1
+            - (
+                z["y"]
+                + z["h"]
+            )
+            / 100
+        ) * CANVAS_H
+
+        w = (
+            z["w"]
+            / 100
+            * CANVAS_W
+        )
+
+        h = (
+            z["h"]
+            / 100
+            * CANVAS_H
+        )
+
+        r, g, b = ZONE_COLORS[
+            z["kind"]
+        ]
+
+        objects.append(
+            {
+                "type": "rect",
+
+                "left": x,
+
+                "top": y,
+
+                "width": w,
+
+                "height": h,
+
+                "fill": (
+                    f"rgba("
+                    f"{r},{g},{b},0.68)"
+                ),
+
+                "stroke": (
+                    "rgba("
+                    "255,255,255,0.95)"
+                ),
+
+                "strokeWidth": 2,
+
+                "rx": 8,
+
+                "ry": 8,
+
+                "selectable": True,
+            }
+        )
+
+    return {
+        "version": "5.3.0",
+        "objects": objects,
+    }
+
+
+def zones_from_canvas(
+    data,
+    old_zones,
+):
+
+    if (
+        not data
+        or "objects" not in data
+    ):
+        return (
+            old_zones,
+            False,
+        )
+
+    rects = [
+
+        o
+
+        for o in data["objects"]
+
+        if o.get("type")
+        == "rect"
+    ]
+
+    names = list(
+        old_zones.keys()
+    )
+
+    if len(rects) != len(names):
+        return (
+            old_zones,
+            False,
+        )
+
+    new = clean_zones(
+        old_zones
+    )
+
+    changed = False
+
+    for name, obj in zip(
+        names,
+        rects,
+    ):
+
+        left = float(
+            obj.get(
+                "left",
+                0,
+            )
+        )
+
+        top = float(
+            obj.get(
+                "top",
+                0,
+            )
+        )
+
+        width = (
+
+            float(
+                obj.get(
+                    "width",
+                    100,
+                )
+            )
+
+            * float(
+                obj.get(
+                    "scaleX",
+                    1,
+                )
+            )
+        )
+
+        height = (
+
+            float(
+                obj.get(
+                    "height",
+                    100,
+                )
+            )
+
+            * float(
+                obj.get(
+                    "scaleY",
+                    1,
+                )
+            )
+        )
+
+        x = np.clip(
+            left
+            / CANVAS_W
+            * 100,
+
+            0,
+            95,
+        )
+
+        w = np.clip(
+            width
+            / CANVAS_W
+            * 100,
+
+            8,
+            45,
+        )
+
+        h = np.clip(
+            height
+            / CANVAS_H
+            * 100,
+
+            7,
+            40,
+        )
+
+        y = np.clip(
+            100
+            - top
+            / CANVAS_H
+            * 100
+            - h,
+
+            1,
+            99 - h,
+        )
+
+        old = new[name]
+
+        if max(
+            abs(old["x"] - x),
+            abs(old["y"] - y),
+            abs(old["w"] - w),
+            abs(old["h"] - h),
+        ) > 0.3:
+
+            changed = True
+
+        old.update(
+
+            x=float(x),
+
+            y=float(y),
+
+            w=float(w),
+
+            h=float(h),
+        )
+
+    return (
+        new,
+        changed,
+    )
+
+
+def make_background():
+
+    img = Image.new(
+        "RGB",
+        (
+            CANVAS_W,
+            CANVAS_H,
+        ),
+        (18, 22, 30),
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    # 그리드
+    for x in range(
+        0,
+        CANVAS_W,
+        45,
+    ):
+
+        draw.line(
+            (
+                x,
+                0,
+                x,
+                CANVAS_H,
+            ),
+            fill=(
+                40,
+                46,
+                58,
+            ),
+            width=1,
+        )
+
+    for y in range(
+        0,
+        CANVAS_H,
+        45,
+    ):
+
+        draw.line(
+            (
+                0,
+                y,
+                CANVAS_W,
+                y,
+            ),
+            fill=(
+                40,
+                46,
+                58,
+            ),
+            width=1,
+        )
+
+    draw.text(
+        (18, 15),
+        "행사장 캔버스 · 구역을 드래그하여 배치",
+        fill=(
+            240,
+            240,
+            245,
+        ),
+    )
+
+    return img
+
+
+# =========================================================
+# 추천 배치
+# =========================================================
+
+def recommended_layout(
+    event_type,
+    people,
+    needs,
+):
+
+    z = clean_zones(
+        DEFAULT_ZONES
+    )
+
+    if event_type in [
+        "콘서트",
+        "페스티벌",
+    ]:
+
+        z["① 웰컴존"].update(
+            x=6,
+            y=77,
+            w=23,
+            h=13,
+        )
+
+        z["② 메인존"].update(
+            x=33,
+            y=34,
+            w=40,
+            h=33,
+        )
+
+        z["③ 체험/콘텐츠존"].update(
+            x=6,
+            y=42,
+            w=23,
+            h=25,
+        )
+
+        z["④ 휴식존"].update(
+            x=7,
+            y=9,
+            w=27,
+            h=22,
+        )
+
+        z["⑤ 포토존"].update(
+            x=77,
+            y=75,
+            w=16,
+            h=14,
+        )
+
+        z["⑦ 푸드존"].update(
+            x=76,
+            y=37,
+            w=18,
+            h=27,
+        )
+
+    else:
+
+        z["① 웰컴존"].update(
+            x=6,
+            y=76,
+            w=23,
+            h=14,
+        )
+
+        z["② 메인존"].update(
+            x=37,
+            y=36,
+            w=30,
+            h=28,
+        )
+
+        z["③ 체험/콘텐츠존"].update(
+            x=7,
+            y=43,
+            w=26,
+            h=24,
+        )
+
+        z["④ 휴식존"].update(
+            x=7,
+            y=9,
+            w=27,
+            h=23,
+        )
+
+        z["⑤ 포토존"].update(
+            x=70,
+            y=70,
+            w=23,
+            h=17,
+        )
+
+        z["⑦ 푸드존"].update(
+            x=71,
+            y=31,
+            w=23,
+            h=27,
+        )
+
+    # 대규모
+    if people >= 500:
+
+        z["① 웰컴존"]["w"] = min(
+            28,
+            z["① 웰컴존"]["w"] + 4,
+        )
+
+        z["④ 휴식존"]["w"] = min(
+            31,
+            z["④ 휴식존"]["w"] + 4,
+        )
+
+    # 접근성 요구가 있는 경우
+    if needs:
+
+        z[
+            "♿ 접근성 휴식/지원"
+        ].update(
+            x=34,
+            y=15,
+            w=23,
+            h=15,
+        )
+
+        z["④ 휴식존"].update(
+            x=7,
+            y=8,
+            w=29,
+            h=24,
+        )
+
+    return clean_zones(z)
+
+
+def placement_score(
+    zones,
+    people,
+    needs,
+):
+
+    score = 100.0
+
+    c = centers(zones)
+
+    names = list(zones)
+
+    # 공간 겹침 평가
+    for i, a_name in enumerate(
+        names
+    ):
+
+        a = zones[a_name]
+
+        for b_name in names[
+            i + 1 :
+        ]:
+
+            b = zones[b_name]
+
+            ow = max(
+                0,
+                min(
+                    a["x"]
+                    + a["w"],
+                    b["x"]
+                    + b["w"],
+                )
+                - max(
+                    a["x"],
+                    b["x"],
+                ),
+            )
+
+            oh = max(
+                0,
+                min(
+                    a["y"]
+                    + a["h"],
+                    b["y"]
+                    + b["h"],
+                )
+                - max(
+                    a["y"],
+                    b["y"],
+                ),
+            )
+
+            overlap = (
+                ow * oh
+            )
+
+            score -= min(
+                14,
+                overlap * 0.25,
+            )
+
+    # 주요 동선 거리
+    for a, b in [
+
+        (
+            "① 웰컴존",
+            "② 메인존",
+        ),
+
+        (
+            "② 메인존",
+            "④ 휴식존",
+        ),
+
+        (
+            "② 메인존",
+            "⑤ 포토존",
+        ),
+
+        (
+            "② 메인존",
+            "⑦ 푸드존",
+        ),
+    ]:
+
+        dist = np.linalg.norm(
+
+            np.array(c[a])
+            - np.array(c[b])
+        )
+
+        score -= max(
+            0,
+            dist - 42,
+        ) * 0.25
+
+    # 접근성 공간 위치
+    if needs:
+
+        access = np.array(
+            c[
+                "♿ 접근성 휴식/지원"
+            ]
+        )
+
+        main = np.array(
+            c["② 메인존"]
+        )
+
+        rest = np.array(
+            c["④ 휴식존"]
+        )
+
+        score -= max(
+            0,
+            np.linalg.norm(
+                access - main
+            ) - 35,
+        ) * 0.5
+
+        score -= max(
+            0,
+            np.linalg.norm(
+                access - rest
+            ) - 28,
+        ) * 0.3
+
+    return float(
+        np.clip(
+            score,
+            0,
+            100,
+        )
+    )
+
+
+# =========================================================
+# 포용적 행사 설계
+# =========================================================
+
+def accessibility_tips(
+    needs,
+    goals,
+):
+
+    tips = []
+
+    if (
+        "이동 보조기기 접근"
+        in needs
+        or "무장애 동선"
+        in goals
+    ):
+
+        tips.extend(
+
+            [
+                "입구 → 메인존 → 휴식존 → 화장실의 주요 경로가 끊기지 않도록 설계합니다.",
+
+                "휠체어·유모차·보행 보조기기가 통과하고 회전할 수 있는 여유 공간을 확보합니다.",
+            ]
+
+        )
+
+    if (
+        "감각 과부하 완화"
+        in needs
+        or "조용한 휴식 공간"
+        in goals
+    ):
+
+        tips.append(
+            "음악·조명 강도가 높은 공간에서 떨어진 조용한 휴식 공간을 마련합니다."
+        )
+
+    if (
+        "시각 정보 보완"
+        in needs
+        or "큰 글씨·고대비 안내"
+        in goals
+    ):
+
+        tips.append(
+            "색상만으로 정보를 전달하지 않고 큰 글씨·고대비·아이콘을 함께 사용합니다."
+        )
+
+    if (
+        "청각 정보 보완"
+        in needs
+        or "수어/자막 등 청각 정보 보완"
+        in goals
+    ):
+
+        tips.append(
+            "중요한 안내와 공연 정보에 자막 등 대체 정보 채널을 제공합니다."
+        )
+
+    if "어린이 동반" in needs:
+
+        tips.append(
+            "보호자와 어린이가 함께 기다리고 쉴 수 있는 공간을 주요 동선 가까이에 둡니다."
+        )
+
+    if (
+        "저비용 참여"
+        in needs
+        or "무료 물/쉼터"
+        in goals
+    ):
+
+        tips.append(
+            "기본적인 물·휴식·안내 서비스를 유료 콘텐츠와 분리해 접근성을 높입니다."
+        )
+
+    if (
+        "외국어 안내"
+        in needs
+        or "다국어 안내"
+        in goals
+    ):
+
+        tips.append(
+            "핵심 안내를 다국어 표지와 쉬운 문장으로 제공하는 것을 검토합니다."
+        )
+
+    if not tips:
+
+        tips.append(
+            "모든 참가자가 이동·정보·휴식 측면에서 장벽을 덜 느끼도록 공간을 처음부터 포용적으로 설계합니다."
+        )
+
+    return tips
+
+
+# =========================================================
+# 로그인 화면
+# =========================================================
+
+if not st.session_state.logged_in:
+
+    st.title(
+        "🎪 행사장 디자이너"
+    )
+
+    st.caption(
+        "행사 조건을 입력하면 공간 구성과 운영 아이디어를 설계합니다."
+    )
+
+    login_tab, signup_tab = st.tabs(
+        [
+            "로그인",
+            "회원가입",
+        ]
+    )
+
+    with login_tab:
+
+        with st.form(
+            "login"
+        ):
+
+            username = st.text_input(
+                "아이디"
+            )
+
+            password = st.text_input(
+                "비밀번호",
+                type="password",
+            )
+
+            submit = st.form_submit_button(
+                "로그인",
+                use_container_width=True,
+            )
+
+        if submit:
+
+            if authenticate(
+                username,
+                password,
+            ):
+
+                st.session_state.logged_in = True
+
+                st.session_state.username = (
+                    username.strip()
+                )
+
+                st.rerun()
+
+            else:
+
+                st.error(
+                    "아이디 또는 비밀번호가 올바르지 않습니다."
+                )
+
+    with signup_tab:
+
+        with st.form(
+            "signup"
+        ):
+
+            new_username = st.text_input(
+                "새 아이디"
+            )
+
+            new_password = st.text_input(
+                "새 비밀번호",
+                type="password",
+            )
+
+            new_password2 = st.text_input(
+                "비밀번호 확인",
+                type="password",
+            )
+
+            submit = st.form_submit_button(
+                "회원가입",
+                use_container_width=True,
+            )
+
+        if submit:
+
+            if (
+                new_password
+                != new_password2
+            ):
+
+                st.error(
+                    "비밀번호가 일치하지 않습니다."
+                )
+
+            else:
+
+                ok, msg = create_user(
+                    new_username,
+                    new_password,
+                )
+
+                (
+                    st.success
+                    if ok
+                    else st.error
+                )(msg)
+
+    st.info(
+        "💡 프로토타입용 기본 로그인 기능입니다."
+    )
+
     st.stop()
 
-result = st.session_state.design_result
-saved = st.session_state.design_inputs
 
-# -----------------------------
-# AI 기획 결과
-# -----------------------------
-st.markdown("---")
-st.header("🎯 추천 행사장 설계안")
+# =========================================================
+# 사이드바
+# =========================================================
 
-c1, c2, c3 = st.columns(3)
-c1.metric("행사 규모", result["scale"])
-c2.metric("권장 공간 규모", result["area"])
-c3.metric("예상 입장료", f'{saved["fee"]:,}원')
+with st.sidebar:
 
-st.subheader("💡 행사 콘셉트")
-st.info(
-    f'**{saved["mood"]} {saved["event_type"]}**를 콘셉트로, '
-    f'{saved["people"]:,}명의 참가자가 {saved["duration"]:g}시간 동안 '
-    "자연스럽게 이동하고 머무를 수 있는 공간을 제안합니다."
+    st.success(
+        f"👤 {st.session_state.username}님"
+    )
+
+    if st.button(
+        "로그아웃",
+        use_container_width=True,
+    ):
+
+        logout()
+
+
+# =========================================================
+# 메인 화면
+# =========================================================
+
+st.title(
+    "🎪 행사장 설계 AI"
 )
 
-st.subheader("🗺️ 기존 기획 공간")
-zone_cols = st.columns(3)
-for idx, (name, position, desc) in enumerate(result["zones"]):
-    with zone_cols[idx % 3]:
-        st.markdown(f"**{name}**")
-        st.caption(f"위치: {position}")
-        st.write(desc)
+st.write(
+    "기획안뿐 아니라 "
+    "**실제 공간 배치·예상 혼잡도·밀집도·추천 배치·포용적 행사 설계**까지 확인합니다."
+)
 
-st.subheader("🚶 추천 동선")
-st.success(result["flow"])
 
-st.subheader("🎨 분위기 연출")
-st.write(result["mood"])
+left, right = st.columns(2)
 
-# -----------------------------
-# Interactive simulator
-# -----------------------------
-st.markdown("---")
-st.header("🧭 행사장 시뮬레이션")
-st.caption("아래 화면은 기획 단계에서 공간 배치와 혼잡도를 비교하기 위한 간단한 2D 시뮬레이션입니다.")
 
-sim_left, sim_right = st.columns([3.2, 1])
+# =========================================================
+# 기본 행사 정보
+# =========================================================
 
-with sim_right:
-    st.subheader("🎛️ 시뮬레이션 설정")
+with left:
 
-    sim_people = st.slider(
-        "시뮬레이션 참가자 수",
-        min_value=50,
-        max_value=1000,
-        value=min(saved["people"], 300),
+    st.subheader(
+        "1. 행사 기본 정보"
+    )
+
+    event_type = st.selectbox(
+        "행사 유형",
+
+        [
+            "콘서트",
+            "페스티벌",
+            "전시회",
+            "박람회",
+            "기업 행사",
+            "네트워킹 행사",
+            "플리마켓",
+            "팝업스토어",
+            "세미나/컨퍼런스",
+            "기타",
+        ],
+    )
+
+    people = st.number_input(
+        "예상 인원수",
+        min_value=10,
+        max_value=10000,
+        value=300,
         step=10,
     )
 
-    event_total_minutes = max(60, int(saved["duration"] * 60))
-    current_minute = st.slider(
-        "행사 진행 시간(분)",
+    duration = st.number_input(
+        "진행 시간(시간)",
+        min_value=0.5,
+        max_value=24.0,
+        value=4.0,
+        step=0.5,
+    )
+
+    age_group = st.selectbox(
+        "예상 연령대",
+
+        [
+            "어린이 중심",
+            "청소년 중심",
+            "20~30대 중심",
+            "30~40대 중심",
+            "40~60대 중심",
+            "전 연령대 / 가족",
+            "혼합 연령대",
+        ],
+    )
+
+
+# =========================================================
+# 공간 방향
+# =========================================================
+
+with right:
+
+    st.subheader(
+        "2. 공간 방향"
+    )
+
+    mood = st.selectbox(
+        "원하는 분위기",
+
+        [
+            "세련되고 모던한",
+            "활기차고 축제 같은",
+            "따뜻하고 감성적인",
+            "고급스럽고 프리미엄한",
+            "자연스럽고 편안한",
+        ],
+    )
+
+    fee = st.number_input(
+        "예상 입장료(원)",
         min_value=0,
-        max_value=event_total_minutes,
-        value=min(90, event_total_minutes),
-        step=5,
+        max_value=1000000,
+        value=15000,
+        step=1000,
     )
 
-    st.markdown("**공간 활성도 조절**")
-    main_weight = st.slider("메인존", 0.5, 2.0, 1.0, 0.1)
-    content_weight = st.slider("체험/콘텐츠존", 0.5, 2.0, 1.0, 0.1)
-    rest_weight = st.slider("휴식존", 0.5, 2.0, 1.0, 0.1)
-    photo_weight = st.slider("포토존", 0.5, 2.0, 1.0, 0.1)
-    food_weight = st.slider("푸드존", 0.5, 2.0, 1.0, 0.1)
+    place = st.radio(
+        "행사 장소",
+        [
+            "실내",
+            "실외",
+        ],
+        horizontal=True,
+    )
 
-    st.markdown("**표시 옵션**")
-    show_heatmap = st.checkbox("혼잡도 히트맵", value=True)
-    show_people = st.checkbox("참가자 위치", value=True)
-    show_paths = st.checkbox("추천 동선 화살표", value=True)
 
-weights = {
-    "② 메인존": main_weight,
-    "③ 체험/콘텐츠존": content_weight,
-    "④ 휴식존": rest_weight,
-    "⑤ 포토존": photo_weight,
-    "푸드존": food_weight,
-    "① 웰컴존": 1.0,
-}
+# =========================================================
+# 접근성 설정
+# =========================================================
 
-positions, destinations = simulate_agents(
-    sim_people,
-    current_minute,
-    saved["event_type"],
-    saved["age_group"],
-    weights,
+st.markdown("---")
+
+st.subheader(
+    "♿ 모두를 위한 접근성 설계"
 )
-occupancy = zone_occupancy(positions)
 
-peak_zone = max(occupancy, key=occupancy.get)
-peak_count = occupancy[peak_zone]
-peak_capacity = VENUE_ZONES[peak_zone]["capacity"]
-peak_pct = peak_count / peak_capacity * 100
+st.caption(
+    "특정 집단을 하나의 유형으로 가정하기보다 "
+    "실제 공간에서 필요한 접근성 요구를 선택해 반영합니다."
+)
 
-corridor_scores = {
-    "웰컴존 → 메인존": occupancy["① 웰컴존"] * 0.45 + occupancy["② 메인존"] * 0.35,
-    "메인존 → 포토존": occupancy["② 메인존"] * 0.40 + occupancy["⑤ 포토존"] * 0.60,
-    "메인존 → 휴식존": occupancy["② 메인존"] * 0.45 + occupancy["④ 휴식존"] * 0.55,
-    "메인존 → 체험존": occupancy["② 메인존"] * 0.45 + occupancy["③ 체험/콘텐츠존"] * 0.55,
-}
-bottleneck = max(corridor_scores, key=corridor_scores.get)
+a1, a2 = st.columns(2)
 
-with sim_left:
-    fig = build_floorplan(
-        positions=positions,
-        occupancy=occupancy,
-        event_type=saved["event_type"],
-        show_people=show_people,
-        show_heatmap=show_heatmap,
-        show_paths=show_paths,
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("현재 인원", f"{sim_people:,}명")
-    k2.metric("최대 혼잡 구역", peak_zone.replace("① ", "").replace("② ", "").replace("③ ", "").replace("④ ", "").replace("⑤ ", "").replace("⑥ ", ""))
-    k3.metric("점유율", f"{peak_pct:.0f}%")
-    k4.metric("주의 동선", bottleneck)
+with a1:
 
-st.subheader("📊 공간별 예상 체류 인원")
-rows = []
-for zone_name, zone in VENUE_ZONES.items():
-    count = occupancy[zone_name]
-    capacity = zone["capacity"]
-    pct = count / capacity * 100
-    status = "🔴 혼잡" if pct >= 85 else "🟠 주의" if pct >= 65 else "🟢 여유"
-    rows.append(
-        {
-            "공간": zone_name,
-            "예상 인원": count,
-            "수용 가능": capacity,
-            "점유율": f"{pct:.0f}%",
-            "상태": status,
-        }
+    needs = st.multiselect(
+
+        "우선 반영할 접근성 요구",
+
+        [
+            "이동 보조기기 접근",
+            "감각 과부하 완화",
+            "시각 정보 보완",
+            "청각 정보 보완",
+            "어린이 동반",
+            "중장년층 편의",
+            "고령 참가자 편의",
+            "외국어 안내",
+            "저비용 참여",
+        ],
+
+        default=[
+            "이동 보조기기 접근",
+            "감각 과부하 완화",
+        ],
     )
 
-st.dataframe(
-    pd.DataFrame(rows).sort_values("예상 인원", ascending=False),
-    hide_index=True,
+
+with a2:
+
+    goals = st.multiselect(
+
+        "운영 장치",
+
+        [
+            "무장애 동선",
+            "접근 가능한 화장실",
+            "낮은 높이 안내 데스크",
+            "큰 글씨·고대비 안내",
+            "수어/자막 등 청각 정보 보완",
+            "조용한 휴식 공간",
+            "무료 물/쉼터",
+            "다국어 안내",
+        ],
+
+        default=[
+            "무장애 동선",
+            "조용한 휴식 공간",
+            "큰 글씨·고대비 안내",
+        ],
+    )
+
+
+# =========================================================
+# 설계 버튼
+# =========================================================
+
+generate = st.button(
+    "✨ 행사장 설계안 만들기",
+    type="primary",
     use_container_width=True,
 )
 
-st.subheader("⏱️ 시간대별 혼잡도")
 
-trend_times = np.arange(
-    0,
-    event_total_minutes + 1,
-    max(10, event_total_minutes // 12),
+if generate:
+
+    st.session_state.design_result = (
+        recommend_design(
+            event_type,
+            int(people),
+            float(duration),
+            age_group,
+            mood,
+            int(fee),
+            place,
+        )
+    )
+
+    st.session_state.design_inputs = {
+
+        "event_type": event_type,
+
+        "people": int(people),
+
+        "duration": float(duration),
+
+        "age_group": age_group,
+
+        "mood": mood,
+
+        "fee": int(fee),
+
+        "place": place,
+    }
+
+    st.session_state.needs = list(
+        needs
+    )
+
+    st.session_state.goals = list(
+        goals
+    )
+
+    st.session_state.venue_zones = (
+        recommended_layout(
+            event_type,
+            int(people),
+            needs,
+        )
+    )
+
+    st.session_state.layout_version = (
+        st.session_state.get(
+            "layout_version",
+            0,
+        )
+        + 1
+    )
+
+
+if "design_result" not in st.session_state:
+
+    st.info(
+        "행사 조건을 입력한 뒤 "
+        "**행사장 설계안 만들기**를 눌러주세요."
+    )
+
+    st.stop()
+
+
+# =========================================================
+# 저장값
+# =========================================================
+
+result = (
+    st.session_state.design_result
 )
-trend_rows = []
 
-# 그래프는 계산량을 줄이기 위해 최대 13개 시점으로 샘플링
-for t in trend_times:
-    p, _ = simulate_agents(
+saved = (
+    st.session_state.design_inputs
+)
+
+st.session_state.needs = (
+    st.session_state.get(
+        "needs",
+        needs,
+    )
+)
+
+st.session_state.goals = (
+    st.session_state.get(
+        "goals",
+        goals,
+    )
+)
+
+st.session_state.venue_zones = clean_zones(
+    st.session_state.get(
+        "venue_zones",
+        DEFAULT_ZONES,
+    )
+)
+
+st.session_state.layout_version = (
+    st.session_state.get(
+        "layout_version",
+        0,
+    )
+)
+
+
+# =========================================================
+# 기본 설계 결과
+# =========================================================
+
+st.markdown("---")
+
+st.header(
+    "🎯 추천 행사장 설계안"
+)
+
+c1, c2, c3 = st.columns(3)
+
+c1.metric(
+    "행사 규모",
+    result["scale"],
+)
+
+c2.metric(
+    "권장 공간 규모",
+    result["area"],
+)
+
+c3.metric(
+    "예상 입장료",
+    f'{saved["fee"]:,}원',
+)
+
+
+st.subheader(
+    "💡 행사 콘셉트"
+)
+
+st.info(
+
+    f'**{saved["mood"]} '
+    f'{saved["event_type"]}**를 콘셉트로 '
+
+    f'{saved["people"]:,}명의 참가자가 '
+    f'{saved["duration"]:g}시간 동안 '
+
+    "자연스럽게 이동하고 머무를 수 있는 공간을 제안합니다."
+)
+
+
+st.subheader(
+    "🚶 기존 추천 동선"
+)
+
+st.success(
+    result["flow"]
+)
+
+
+# =========================================================
+# 탭
+# =========================================================
+
+tab1, tab2, tab3 = st.tabs(
+    [
+        "🗺️ 공간 배치",
+        "🔥 혼잡도 시뮬레이션",
+        "♿ 포용적 행사 설계",
+    ]
+)
+
+
+# =========================================================
+# 탭 1 - 공간 배치
+# =========================================================
+
+with tab1:
+
+    st.subheader(
+        "🗺️ 실제 2D 공간 배치"
+    )
+
+    st.write(
+        "색상 블록을 **드래그해서 이동**하고 "
+        "모서리를 잡아 **크기 조절**할 수 있습니다."
+    )
+
+    b1, b2, b3 = st.columns(3)
+
+
+    with b1:
+
+        if st.button(
+            "✨ 추천 배치 다시 적용",
+            use_container_width=True,
+        ):
+
+            st.session_state.venue_zones = (
+                recommended_layout(
+                    saved["event_type"],
+                    saved["people"],
+                    st.session_state.needs,
+                )
+            )
+
+            st.session_state.layout_version += 1
+
+            st.rerun()
+
+
+    with b2:
+
+        if st.button(
+            "↩️ 기본 배치",
+            use_container_width=True,
+        ):
+
+            st.session_state.venue_zones = (
+                clean_zones(
+                    DEFAULT_ZONES
+                )
+            )
+
+            st.session_state.layout_version += 1
+
+            st.rerun()
+
+
+    with b3:
+
+        current_score = placement_score(
+            st.session_state.venue_zones,
+            saved["people"],
+            st.session_state.needs,
+        )
+
+        st.metric(
+            "현재 배치 점수",
+            f"{current_score:.0f}/100",
+        )
+
+
+    # 드래그 캔버스
+    if CANVAS_OK:
+
+        canvas_key = (
+            f"layout_canvas_"
+            f"{st.session_state.layout_version}"
+        )
+
+        canvas = st_canvas(
+
+            fill_color=(
+                "rgba("
+                "255,255,255,0.20)"
+            ),
+
+            stroke_color=(
+                "rgba("
+                "255,255,255,0.95)"
+            ),
+
+            stroke_width=2,
+
+            background_color="#12161e",
+
+            background_image=make_background(),
+
+            initial_drawing=canvas_json(
+                st.session_state.venue_zones
+            ),
+
+            drawing_mode="transform",
+
+            height=CANVAS_H,
+
+            width=CANVAS_W,
+
+            display_toolbar=True,
+
+            update_streamlit=True,
+
+            key=canvas_key,
+        )
+
+
+        new_zones, changed = (
+            zones_from_canvas(
+                canvas.json_data
+                if canvas
+                else None,
+
+                st.session_state.venue_zones,
+            )
+        )
+
+
+        if changed:
+
+            st.session_state.venue_zones = (
+                new_zones
+            )
+
+            st.session_state.layout_version += 1
+
+            st.rerun()
+
+
+    else:
+
+        st.warning(
+
+            "드래그 기능을 사용하려면 "
+            "`streamlit-drawable-canvas`가 "
+            "설치되어 있어야 합니다."
+        )
+
+
+    st.subheader(
+        "📋 현재 공간 좌표"
+    )
+
+    layout_rows = []
+
+    for name, z in (
+        st.session_state.venue_zones.items()
+    ):
+
+        layout_rows.append(
+
+            {
+                "공간": name,
+
+                "x": round(
+                    z["x"],
+                    1,
+                ),
+
+                "y": round(
+                    z["y"],
+                    1,
+                ),
+
+                "가로": round(
+                    z["w"],
+                    1,
+                ),
+
+                "세로": round(
+                    z["h"],
+                    1,
+                ),
+
+                "수용 기준": z[
+                    "capacity"
+                ],
+            }
+        )
+
+    st.dataframe(
+        pd.DataFrame(
+            layout_rows
+        ),
+
+        hide_index=True,
+
+        use_container_width=True,
+    )
+
+
+# =========================================================
+# 탭 2 - 혼잡도
+# =========================================================
+
+with tab2:
+
+    st.subheader(
+        "🔥 예상 혼잡도 & 밀집도 시뮬레이션"
+    )
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+
+
+    with sc1:
+
+        sim_people = st.slider(
+
+            "참가자 수",
+
+            50,
+
+            min(
+                2000,
+                max(
+                    100,
+                    saved["people"],
+                ),
+            ),
+
+            min(
+                saved["people"],
+                500,
+            ),
+
+            10,
+        )
+
+
+    with sc2:
+
+        total_min = max(
+            60,
+            int(
+                saved["duration"]
+                * 60
+            ),
+        )
+
+        current_min = st.slider(
+
+            "현재 시각(분)",
+
+            0,
+
+            total_min,
+
+            min(
+                90,
+                total_min,
+            ),
+
+            5,
+        )
+
+
+    with sc3:
+
+        main_w = st.slider(
+
+            "메인존 활성도",
+
+            0.5,
+            2.0,
+            1.0,
+            0.1,
+        )
+
+
+    with sc4:
+
+        content_w = st.slider(
+
+            "체험존 활성도",
+
+            0.5,
+            2.0,
+            1.0,
+            0.1,
+        )
+
+
+    sc5, sc6, sc7 = st.columns(3)
+
+
+    with sc5:
+
+        rest_w = st.slider(
+            "휴식존 활성도",
+            0.5,
+            2.0,
+            1.0,
+            0.1,
+        )
+
+
+    with sc6:
+
+        photo_w = st.slider(
+            "포토존 활성도",
+            0.5,
+            2.0,
+            1.0,
+            0.1,
+        )
+
+
+    with sc7:
+
+        food_w = st.slider(
+            "푸드존 활성도",
+            0.5,
+            2.0,
+            1.0,
+            0.1,
+        )
+
+
+    sim_weights = {
+
+        "① 웰컴존": 1.0,
+
+        "② 메인존": main_w,
+
+        "③ 체험/콘텐츠존":
+            content_w,
+
+        "④ 휴식존":
+            rest_w,
+
+        "⑤ 포토존":
+            photo_w,
+
+        "⑥ 운영존": 0.7,
+
+        "⑦ 푸드존":
+            food_w,
+
+        "♿ 접근성 휴식/지원":
+            1.0,
+    }
+
+
+    positions = simulate_agents(
+
         sim_people,
-        int(t),
+
+        current_min,
+
         saved["event_type"],
-        saved["age_group"],
-        weights,
-    )
-    occ = zone_occupancy(p)
-    for zone_name, count in occ.items():
-        trend_rows.append(
-            {"시간": int(t), "공간": zone_name, "인원": count}
-        )
 
-trend_df = pd.DataFrame(trend_rows)
-trend_fig = go.Figure()
+        st.session_state.venue_zones,
 
-for zone_name in VENUE_ZONES:
-    part = trend_df[trend_df["공간"] == zone_name]
-    trend_fig.add_trace(
-        go.Scatter(
-            x=part["시간"],
-            y=part["인원"],
-            mode="lines+markers",
-            name=zone_name,
-        )
+        sim_weights,
+
+        st.session_state.needs,
     )
 
-trend_fig.update_layout(
-    height=380,
-    margin=dict(l=10, r=10, t=10, b=10),
-    xaxis_title="행사 진행 시간(분)",
-    yaxis_title="예상 체류 인원",
-    legend=dict(orientation="h", y=1.12),
+
+    occ = zone_occupancy(
+
+        positions,
+
+        st.session_state.venue_zones,
+    )
+
+
+    # 혼잡 데이터
+    rows = []
+
+    for name, z in (
+        st.session_state.venue_zones.items()
+    ):
+
+        count = occ[name]
+
+        pct = (
+            count
+            / max(
+                1,
+                z["capacity"],
+            )
+            * 100
+        )
+
+        if pct >= 100:
+
+            status = "🔴 매우 높음"
+
+        elif pct >= 85:
+
+            status = "🟠 높음"
+
+        elif pct >= 65:
+
+            status = "🟡 주의"
+
+        else:
+
+            status = "🟢 여유"
+
+
+        rows.append(
+
+            {
+                "공간": name,
+
+                "예상 인원": count,
+
+                "수용 기준":
+                    z["capacity"],
+
+                "예상 밀집도":
+                    f"{pct:.0f}%",
+
+                "상태": status,
+            }
+        )
+
+
+    congestion_df = (
+        pd.DataFrame(rows)
+        .sort_values(
+            "예상 인원",
+            ascending=False,
+        )
+    )
+
+
+    peak = (
+        congestion_df.iloc[0]
+    )
+
+
+    m1, m2, m3, m4 = st.columns(4)
+
+
+    peak_pct = float(
+        str(
+            peak[
+                "예상 밀집도"
+            ]
+        ).replace(
+            "%",
+            "",
+        )
+    )
+
+
+    m1.metric(
+        "현재 인원",
+        f"{sim_people:,}명",
+    )
+
+
+    m2.metric(
+        "최고 혼잡 공간",
+        str(
+            peak["공간"]
+        ),
+    )
+
+
+    m3.metric(
+        "최대 밀집도",
+        f"{peak_pct:.0f}%",
+    )
+
+
+    operating_index = max(
+        0,
+        100
+        - max(
+            0,
+            peak_pct - 65,
+        ),
+    )
+
+
+    m4.metric(
+        "운영 여유 지수",
+        f"{operating_index:.0f}/100",
+    )
+
+
+    st.caption(
+        "밀집도 = 예상 체류 인원 ÷ 해당 공간의 기획상 수용 기준"
+    )
+
+
+    # 지도
+    map_col, table_col = st.columns(
+        [3, 1]
+    )
+
+
+    with map_col:
+
+        xs, ys, H = heatmap(
+            positions
+        )
+
+        fig = go.Figure()
+
+
+        fig.add_trace(
+
+            go.Heatmap(
+
+                x=xs,
+
+                y=ys,
+
+                z=H,
+
+                colorscale="Turbo",
+
+                opacity=0.52,
+
+                colorbar=dict(
+                    title="밀집도"
+                ),
+
+                hoverinfo="skip",
+            )
+        )
+
+
+        fig.add_trace(
+
+            go.Scatter(
+
+                x=positions[:, 0],
+
+                y=positions[:, 1],
+
+                mode="markers",
+
+                marker=dict(
+                    size=4,
+                    opacity=0.55,
+                ),
+
+                hoverinfo="skip",
+            )
+        )
+
+
+        c = centers(
+            st.session_state.venue_zones
+        )
+
+
+        path_pairs = [
+
+            (
+                "① 웰컴존",
+                "② 메인존",
+            ),
+
+            (
+                "② 메인존",
+                "⑤ 포토존",
+            ),
+
+            (
+                "② 메인존",
+                "④ 휴식존",
+            ),
+
+            (
+                "④ 휴식존",
+                "⑦ 푸드존",
+            ),
+
+            (
+                "② 메인존",
+                "③ 체험/콘텐츠존",
+            ),
+        ]
+
+
+        for a, b in path_pairs:
+
+            fig.add_annotation(
+
+                x=c[b][0],
+
+                y=c[b][1],
+
+                ax=c[a][0],
+
+                ay=c[a][1],
+
+                xref="x",
+
+                yref="y",
+
+                axref="x",
+
+                ayref="y",
+
+                showarrow=True,
+
+                arrowhead=2,
+
+                arrowwidth=2,
+
+                arrowcolor=(
+                    "rgba("
+                    "255,255,255,0.65)"
+                ),
+            )
+
+
+        for name, z in (
+            st.session_state.venue_zones.items()
+        ):
+
+            pct = (
+                occ[name]
+                / max(
+                    1,
+                    z["capacity"],
+                )
+                * 100
+            )
+
+
+            fig.add_shape(
+
+                type="rect",
+
+                x0=z["x"],
+
+                y0=z["y"],
+
+                x1=z["x"] + z["w"],
+
+                y1=z["y"] + z["h"],
+
+                line=dict(
+                    color="white",
+                    width=2,
+                ),
+
+                fillcolor=(
+                    "rgba("
+                    "255,255,255,0.05)"
+                ),
+            )
+
+
+            fig.add_annotation(
+
+                x=(
+                    z["x"]
+                    + z["w"] / 2
+                ),
+
+                y=(
+                    z["y"]
+                    + z["h"] / 2
+                ),
+
+                text=(
+
+                    f"<b>{name}</b>"
+                    f"<br>{occ[name]}명"
+                    f" · {pct:.0f}%"
+                ),
+
+                showarrow=False,
+
+                font=dict(
+                    size=11
+                ),
+            )
+
+
+        fig.update_layout(
+
+            height=620,
+
+            margin=dict(
+                l=5,
+                r=5,
+                t=5,
+                b=5,
+            ),
+
+            xaxis=dict(
+                range=[
+                    0,
+                    100,
+                ],
+                visible=False,
+            ),
+
+            yaxis=dict(
+                range=[
+                    0,
+                    100,
+                ],
+                visible=False,
+                scaleanchor="x",
+            ),
+
+            showlegend=False,
+        )
+
+
+        st.plotly_chart(
+
+            fig,
+
+            use_container_width=True,
+
+            config={
+                "displaylogo": False
+            },
+        )
+
+
+    with table_col:
+
+        st.dataframe(
+
+            congestion_df,
+
+            hide_index=True,
+
+            use_container_width=True,
+        )
+
+
+    # 시간별 그래프
+    st.subheader(
+        "📈 시간대별 혼잡도"
+    )
+
+
+    times = np.linspace(
+        0,
+        total_min,
+        10,
+    ).astype(int)
+
+
+    trend_rows = []
+
+
+    for t in times:
+
+        p = simulate_agents(
+
+            min(
+                sim_people,
+                700,
+            ),
+
+            int(t),
+
+            saved["event_type"],
+
+            st.session_state.venue_zones,
+
+            sim_weights,
+
+            st.session_state.needs,
+        )
+
+
+        o = zone_occupancy(
+
+            p,
+
+            st.session_state.venue_zones,
+        )
+
+
+        for name, count in (
+            o.items()
+        ):
+
+            pct = (
+                count
+                / max(
+                    1,
+                    st.session_state
+                    .venue_zones[name]
+                    ["capacity"],
+                )
+                * 100
+            )
+
+
+            trend_rows.append(
+
+                {
+                    "시간": int(t),
+
+                    "공간": name,
+
+                    "밀집도": pct,
+                }
+            )
+
+
+    trend = pd.DataFrame(
+        trend_rows
+    )
+
+
+    tf = go.Figure()
+
+
+    for name in (
+        st.session_state.venue_zones
+    ):
+
+        part = trend[
+            trend["공간"] == name
+        ]
+
+
+        tf.add_trace(
+
+            go.Scatter(
+
+                x=part["시간"],
+
+                y=part["밀집도"],
+
+                mode="lines+markers",
+
+                name=name,
+            )
+        )
+
+
+    tf.add_hline(
+
+        y=85,
+
+        line_dash="dash",
+
+        annotation_text="주의 85%",
+    )
+
+
+    tf.add_hline(
+
+        y=100,
+
+        line_dash="dot",
+
+        annotation_text="수용 기준 100%",
+    )
+
+
+    tf.update_layout(
+
+        height=380,
+
+        margin=dict(
+            l=10,
+            r=10,
+            t=10,
+            b=10,
+        ),
+
+        xaxis_title=(
+            "행사 진행 시간(분)"
+        ),
+
+        yaxis_title=(
+            "예상 밀집도(%)"
+        ),
+
+        legend=dict(
+            orientation="h",
+            y=1.12,
+        ),
+    )
+
+
+    st.plotly_chart(
+
+        tf,
+
+        use_container_width=True,
+
+        config={
+            "displaylogo": False
+        },
+    )
+
+
+    # =====================================================
+    # 추천 배치 비교
+    # =====================================================
+
+    st.subheader(
+        "✨ AI 추천 배치"
+    )
+
+
+    recommended = (
+        recommended_layout(
+            saved["event_type"],
+            saved["people"],
+            st.session_state.needs,
+        )
+    )
+
+
+    current_score = placement_score(
+
+        st.session_state.venue_zones,
+
+        saved["people"],
+
+        st.session_state.needs,
+    )
+
+
+    recommended_score = placement_score(
+
+        recommended,
+
+        saved["people"],
+
+        st.session_state.needs,
+    )
+
+
+    r1, r2, r3 = st.columns(3)
+
+
+    r1.metric(
+        "현재 배치 점수",
+        f"{current_score:.0f}/100",
+    )
+
+
+    r2.metric(
+        "추천 배치 점수",
+        f"{recommended_score:.0f}/100",
+    )
+
+
+    r3.metric(
+        "개선 여지",
+        f"{max(0, recommended_score - current_score):.0f}점",
+    )
+
+
+    rec_positions = simulate_agents(
+
+        min(
+            sim_people,
+            700,
+        ),
+
+        current_min,
+
+        saved["event_type"],
+
+        recommended,
+
+        sim_weights,
+
+        st.session_state.needs,
+    )
+
+
+    rec_occ = zone_occupancy(
+
+        rec_positions,
+
+        recommended,
+    )
+
+
+    rec_peak_pct, rec_peak_name = max(
+
+        (
+            rec_occ[n]
+            / max(
+                1,
+                recommended[n][
+                    "capacity"
+                ],
+            )
+            * 100,
+
+            n,
+        )
+
+        for n in rec_occ
+    )
+
+
+    st.info(
+
+        f"현재 배치 최고 밀집도: "
+        f"**{peak_pct:.0f}%**  →  "
+        f"추천 배치 시 약 "
+        f"**{rec_peak_pct:.0f}%**"
+    )
+
+
+    if st.button(
+        "✅ 추천 배치를 실제 배치에 적용",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        st.session_state.venue_zones = (
+            recommended
+        )
+
+        st.session_state.layout_version += 1
+
+        st.rerun()
+
+
+# =========================================================
+# 탭 3 - 포용적 행사
+# =========================================================
+
+with tab3:
+
+    st.subheader(
+        "♿ 포용적 행사 설계"
+    )
+
+
+    st.write(
+
+        "모두를 위한 행사는 특정 집단만 따로 분리하기보다, "
+        "**이동·정보·감각·휴식·비용의 장벽을 처음부터 낮추는 방식**으로 설계합니다."
+    )
+
+
+    t1, t2 = st.columns(2)
+
+
+    with t1:
+
+        st.markdown(
+            "### 🚪 이동"
+        )
+
+
+        for tip in [
+
+            "입구 → 주요 프로그램 → 휴식 → 화장실의 주요 경로가 끊기지 않도록 설계",
+
+            "휠체어·유모차·보행 보조기기가 통과하고 회전할 수 있는 여유 공간 확보",
+
+            "대기열을 주요 통로에 만들지 않고 별도 대기 공간으로 분리",
+        ]:
+
+            st.write(
+                "• " + tip
+            )
+
+
+        st.markdown(
+            "### 👁️👂 정보"
+        )
+
+
+        for tip in [
+
+            "색상만으로 정보를 전달하지 않고 글자·아이콘을 함께 사용",
+
+            "중요 안내를 문자·음성 등 한 가지 채널에만 의존하지 않기",
+
+            "공연·발표에 자막 등 대체 정보 채널 제공",
+        ]:
+
+            st.write(
+                "• " + tip
+            )
+
+
+    with t2:
+
+        st.markdown(
+            "### 🧘 감각·휴식"
+        )
+
+
+        for tip in [
+
+            "소음·조명이 강한 공간에서 떨어진 조용한 휴식 공간 마련",
+
+            "휴식 공간에 좌석과 물을 제공",
+
+            "혼잡한 시간대를 미리 알려 참가자가 이동 시점을 선택할 수 있게 지원",
+        ]:
+
+            st.write(
+                "• " + tip
+            )
+
+
+        st.markdown(
+            "### 💳 비용·참여"
+        )
+
+
+        for tip in [
+
+            "무료 또는 저비용으로 참여할 수 있는 콘텐츠 포함",
+
+            "물·기본 안내·휴식 같은 필수 편의를 유료 콘텐츠와 분리",
+
+            "관람만으로도 행사에 참여했다고 느낄 수 있는 콘텐츠 마련",
+        ]:
+
+            st.write(
+                "• " + tip
+            )
+
+
+    st.markdown("---")
+
+
+    st.subheader(
+        "🔎 현재 선택 조건을 반영한 설계 제안"
+    )
+
+
+    for tip in accessibility_tips(
+
+        st.session_state.needs,
+
+        st.session_state.goals,
+    ):
+
+        st.write(
+            "• " + tip
+        )
+
+
+    st.subheader(
+        "✅ 접근성 체크리스트"
+    )
+
+
+    checklist = [
+
+        (
+            "무장애 동선",
+
+            "주요 동선에 계단·단차 등 이동 장벽이 없는지 확인",
+        ),
+
+        (
+            "접근 가능한 화장실",
+
+            "주요 공간에서 접근 가능한 화장실 위치와 안내를 확인",
+        ),
+
+        (
+            "정보 접근",
+
+            "글자 크기·대비·아이콘·대체 정보 채널을 확인",
+        ),
+
+        (
+            "감각 휴식",
+
+            "조용한 공간과 강한 자극 공간을 분리",
+        ),
+
+        (
+            "대기 부담",
+
+            "장시간 서 있어야 하는 구간에 휴식·대기 공간이 있는지 확인",
+        ),
+
+        (
+            "비용 장벽",
+
+            "필수 편의가 유료 이용과 분리되어 있는지 확인",
+        ),
+
+        (
+            "비상·안전",
+
+            "실제 현장에서는 피난·소방·시설 기준을 별도로 확인",
+        ),
+    ]
+
+
+    for label, help_text in checklist:
+
+        st.checkbox(
+
+            label,
+
+            key="access_" + label,
+
+            help=help_text,
+        )
+
+
+# =========================================================
+# 기존 추천 내용 추가
+# =========================================================
+
+st.markdown("---")
+
+st.subheader(
+    "🎨 분위기 연출"
 )
-st.plotly_chart(trend_fig, use_container_width=True, config={"displaylogo": False})
 
-st.subheader("🧠 시뮬레이션 해석")
-warnings = []
+st.write(
+    result["mood"]
+)
 
-if peak_pct >= 100:
-    warnings.append(
-        f"{peak_zone}의 예상 인원이 수용 규모를 넘어섭니다. 공간을 넓히거나 인근 공간으로 참가자를 분산하는 방안을 검토하세요."
-    )
-elif peak_pct >= 85:
-    warnings.append(
-        f"{peak_zone}이 혼잡해질 가능성이 큽니다. 입구·통로 폭을 넓히거나 체류형 콘텐츠를 분산하는 것이 좋습니다."
-    )
 
-if occupancy["⑤ 포토존"] > VENUE_ZONES["⑤ 포토존"]["capacity"] * 0.8:
-    warnings.append("포토존 주변에 대기열이 형성될 가능성이 있으므로 대기 공간을 따로 확보하세요.")
+st.subheader(
+    "👥 인원 및 안전 운영"
+)
 
-if occupancy["④ 휴식존"] < 15:
-    warnings.append("휴식존 이용률이 낮습니다. 메인존과의 연결성을 높이거나 위치를 메인 동선 쪽으로 이동해 볼 수 있습니다.")
+st.write(
+    result["crowd"]
+)
 
-if occupancy["③ 체험/콘텐츠존"] > VENUE_ZONES["③ 체험/콘텐츠존"]["capacity"] * 0.8:
-    warnings.append("체험/콘텐츠존이 혼잡합니다. 프로그램을 여러 위치로 분산하거나 회차를 나누는 방법을 고려하세요.")
+st.write(
+    result["safety"]
+)
 
-if not warnings:
-    warnings.append("현재 설정에서는 특정 구역에 과도한 집중이 나타나지 않습니다. 시간대별 그래프를 함께 확인해 보세요.")
 
-for warning in warnings:
-    st.write("• " + warning)
+st.subheader(
+    "🏠 장소 조건"
+)
+
+st.write(
+    result["venue"]
+)
+
+st.write(
+    result["weather"]
+)
+
+
+st.subheader(
+    "💰 입장료 기반 운영 전략"
+)
+
+st.write(
+    result["budget"]
+)
+
 
 st.markdown("---")
-st.subheader("👥 인원 및 안전 운영")
-st.write(result["crowd"])
-st.write(result["safety"])
 
-st.subheader("🏠 장소 조건")
-st.write(result["venue"])
-st.write(result["weather"])
-
-st.subheader("💰 입장료 기반 운영 전략")
-st.write(result["budget"])
-
-st.markdown("---")
 st.caption(
-    "※ 히트맵과 이동 결과는 행사 기획용의 단순화된 시뮬레이션입니다. "
-    "실제 행사에서는 현장 평면도, 출입구 수, 통로 폭, 비상 동선, 시설/소방 기준 등을 별도로 검토해야 합니다."
+
+    "※ 본 앱의 혼잡도·밀집도는 행사 기획용 단순화 시뮬레이션입니다. "
+    "실제 행사의 안전 판단에는 현장 실측, 통로 폭, 출입구, 피난 동선, "
+    "소방·시설 기준 등의 별도 검토가 필요합니다."
 )
