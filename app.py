@@ -1,10 +1,3 @@
-from pathlib import Path
-import textwrap, zipfile, os
-
-root = Path("/mnt/data/event_space_designer")
-root.mkdir(parents=True, exist_ok=True)
-
-app_py = r'''
 import streamlit as st
 import sqlite3
 import hashlib
@@ -302,58 +295,3 @@ else:
         4. **행사장 설계안 만들기** 버튼을 누르면 공간 구성이 생성됩니다.
         """
     )
-'''
-
-requirements = """streamlit>=1.38,<2
-"""
-
-gitignore = """__pycache__/
-*.pyc
-.venv/
-venv/
-.env
-.streamlit/secrets.toml
-users.db
-"""
-
-readme = """# 🎪 행사장 설계 AI - Streamlit
-
-사용자가 입력한 행사 조건을 바탕으로 행사장 공간 구성과 운영 아이디어를 제안하는 Streamlit 앱입니다.
-
-## 포함 기능
-- 회원가입 / 로그인
-- 행사 유형 선택
-- 예상 인원수
-- 진행 시간
-- 예상 연령대
-- 원하는 분위기
-- 예상 입장료
-- 실내 / 실외 선택
-- 행사 규모 및 권장 공간 규모 제안
-- 공간별 존 구성
-- 추천 동선
-- 분위기 연출
-- 안전/혼잡 운영 포인트
-- 입장료 기반 운영 전략
-
-## 1. GitHub에 올리기
-
-이 폴더의 파일을 GitHub 저장소에 업로드하세요.
-
-필수 파일:
-- `app.py`
-- `requirements.txt`
-- `.gitignore`
-
-`README.md`는 설명용입니다.
-
-## 2. Streamlit에서 실행하기
-
-Streamlit Community Cloud에서 GitHub 저장소를 연결한 뒤,
-Main file path를 `app.py`로 지정하면 됩니다.
-
-## 3. 로컬 실행
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
