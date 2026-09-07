@@ -2273,7 +2273,7 @@ with tab1:
                 st.session_state.venue_zones
             ),
 
-            drawing_mode="transform",
+           
 
             height=CANVAS_H,
 
