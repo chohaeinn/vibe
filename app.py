@@ -2279,7 +2279,6 @@ with tab1:
 
             width=CANVAS_W,
 
-            display_toolbar=True,
 
             update_streamlit=True,
 
