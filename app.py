@@ -1,5 +1,4 @@
-
-        m = st.columns(5)
+ m = st.columns(5)
         m[0].metric("행사", P["name"])
         m[1].metric("방문객", f"{P['visitors']:,}명")
         m[2].metric("면적", f"{P['area_m2']:,}㎡")
