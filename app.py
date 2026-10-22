@@ -1301,46 +1301,208 @@ def build_markdown(r: dict) -> str:
     return "\n".join(L)
 
 
-def build_html(r: dict) -> str:
-    md = build_markdown(r)
-    body, in_tbl = [], False
-    for line in md.split("\n"):
-        e = _html.escape(line)
-        e = e.replace("**", "§")
-        while "§" in e:
-            e = e.replace("§", "<b>", 1).replace("§", "</b>", 1)
-        if line.startswith("|"):
-            if set(line.replace("|", "").strip()) <= {"-"}:
-                continue
-            cells = [c.strip() for c in e.strip("|").split("|")]
-            if not in_tbl:
-                body.append("<table>")
-                in_tbl = True
-                body.append("<tr>" + "".join(f"<th>{c}</th>" for c in cells) + "</tr>")
-            else:
-                body.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
-            continue
-        if in_tbl:
-            body.append("</table>")
-            in_tbl = False
-        if line.startswith("### "):
-            body.append(f"<h3>{e[4:]}</h3>")
-        elif line.startswith("## "):
-            body.append(f"<h2>{e[3:]}</h2>")
-        elif line.startswith("# "):
-            body.append(f"<h1>{e[2:]}</h1>")
-        elif line.startswith("- "):
-            body.append(f"<p class='li'>• {e[2:]}</p>")
-        elif line.strip():
-            body.append(f"<p>{e}</p>")
-    if in_tbl:
-        body.append("</table>")
-    return ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'><title>Event ON 리포트</title><style>"
-            "body{font-family:Pretendard,'Malgun Gothic',sans-serif;max-width:860px;margin:30px auto;padding:0 20px;color:#1e293b;line-height:1.65}"
-            "h1{color:#1e3a8a}h2{border-bottom:2px solid #e2e8f0;padding-bottom:4px;margin-top:28px}"
-            "table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #cbd5e1;padding:6px 10px;text-align:left;font-size:14px}"
-            "th{background:#eff6ff}.li{margin:3px 0 3px 8px}@media print{body{margin:0}}</style></head><body>"
-            + "\n".join(body) + "</body></html>")
+# ----------------------------------------------------------------------------
+# 보고서형 HTML (표지 → 목차 → 장별 본문 → 그림·표 캡션). 추가 라이브러리 없이 SVG로 그림을 그린다.
+# 저장: 보고서 화면의 [PDF로 저장] 버튼(브라우저 인쇄) 또는 HTML 다운로드
+# ----------------------------------------------------------------------------
+TEAM_NAME = "INCLUSE"
+SCHOOL_NAME = "건양고등학교"
+
+REPORT_CSS = """
+@page{size:A4;margin:20mm 18mm}
+*{box-sizing:border-box}
+body{font-family:Pretendard,'Malgun Gothic','Noto Sans KR',sans-serif;color:#1e293b;line-height:1.75;font-size:14px;margin:0;background:#f1f5f9}
+.doc{max-width:820px;margin:0 auto;background:#fff;padding:0 48px 40px}
+.bar{position:sticky;top:0;background:#1e3a8a;color:#fff;padding:8px 16px;text-align:right;z-index:9}
+.bar button{background:#fff;color:#1e3a8a;border:0;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer}
+.cover{min-height:900px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;border-bottom:1px solid #e2e8f0}
+.cover .tag{color:#1e3a8a;font-weight:700;letter-spacing:2px;margin-bottom:18px}
+.cover h1{font-size:34px;line-height:1.4;margin:0 0 14px;color:#0f172a}
+.cover .sub{color:#64748b;font-size:16px;margin-bottom:60px}
+.cover .meta{color:#475569;line-height:2}
+.toc{padding:40px 0;min-height:500px}
+.toc li{margin:10px 0;font-size:16px}
+h2{font-size:21px;color:#1e3a8a;border-bottom:2px solid #1e3a8a;padding-bottom:5px;margin:40px 0 14px;page-break-after:avoid}
+h3{font-size:16px;margin:22px 0 8px;color:#0f172a;page-break-after:avoid}
+p{margin:6px 0}.li{margin:3px 0 3px 10px}
+table{border-collapse:collapse;width:100%;margin:8px 0 4px;font-size:13px;page-break-inside:avoid}
+th,td{border:1px solid #cbd5e1;padding:6px 9px;text-align:center}th{background:#eff6ff}td.l{text-align:left}
+.cap{text-align:center;color:#64748b;font-size:12.5px;margin:4px 0 16px}
+figure{margin:10px 0;text-align:center;page-break-inside:avoid}figure svg{max-width:100%;height:auto}
+.two{display:flex;gap:12px}.two figure{flex:1;margin:0}
+.box{background:#f8fafc;border-left:4px solid #1e3a8a;padding:10px 14px;margin:10px 0}
+.note{color:#64748b;font-size:12.5px;margin-top:30px;border-top:1px solid #e2e8f0;padding-top:8px}
+.sec{page-break-before:auto}
+@media print{body{background:#fff}.doc{padding:0;max-width:none}.bar{display:none}.cover,.toc{page-break-after:always}.cover{min-height:240mm}.toc{min-height:0}}
+"""
+
+
+def _plain(s: str) -> str:
+    """'~했습니다' 말투를 보고서용 평서체('~했다')로 바꾼다."""
+    for a, b in [("했습니다", "했다"), ("됩니다", "된다"), ("합니다", "한다"), ("입니다", "이다"), ("있습니다", "있다"),
+                 ("줄였습니다", "줄였다"), ("낮췄고", "낮췄고"), ("양보했습니다", "양보했다"), ("바랍니다", "바란다"),
+                 ("필요합니다", "필요하다"), ("입력하신", "입력한"), ("습니다", "다")]:
+        s = s.replace(a, b)
+    return s
+
+
+def _e(x) -> str:
+    return _html.escape(str(x))
+
+
+def _svg_layout(zones, gates, shape, title, mpu) -> str:
+    """배치도 SVG (160x100 가상 좌표)."""
+    o = []
+    pts = " ".join(f"{x},{y}" for x, y in shape["outline"])
+    o.append(f'<svg viewBox="-2 -2 164 104" xmlns="http://www.w3.org/2000/svg" font-family="Malgun Gothic,sans-serif">')
+    o.append(f'<polygon points="{pts}" fill="#f8fafc" stroke="#334155" stroke-width="0.8"/>')
+    for z in zones:
+        c = ZONE_META[z["type"]]["color"]
+        o.append(f'<rect x="{z["x"]}" y="{z["y"]}" width="{z["w"]}" height="{z["h"]}" rx="1" fill="{c}" fill-opacity=".78" stroke="#fff" stroke-width=".4"/>')
+        fs = max(1.9, min(3.0, z["w"] / max(3, len(z["name"])) * 0.95))
+        o.append(f'<text x="{z["x"] + z["w"] / 2}" y="{z["y"] + z["h"] / 2 + fs / 3}" font-size="{fs:.1f}" fill="#fff" text-anchor="middle" font-weight="700">{_e(z["name"])}</text>')
+    for g in gates:
+        o.append(f'<circle cx="{g["x"]}" cy="{g["y"]}" r="2" fill="#0f172a"/>')
+        o.append(f'<text x="{g["x"]}" y="{g["y"] - 3}" font-size="2.6" text-anchor="middle" fill="#0f172a">{_e(g["name"])}</text>')
+    o.append("</svg>")
+    return "".join(o)
+
+
+def _svg_bars(labels, before, after) -> str:
+    """설계 전·후 점수 막대그래프 SVG."""
+    W, H, L, B = 640, 280, 40, 50
+    n = len(labels)
+    gw = (W - L - 10) / n
+    o = [f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" font-family="Malgun Gothic,sans-serif" font-size="12">']
+    for t in (0, 25, 50, 75, 100):
+        y = H - B - (H - B - 20) * t / 100
+        o.append(f'<line x1="{L}" x2="{W - 10}" y1="{y}" y2="{y}" stroke="#e2e8f0"/><text x="{L - 6}" y="{y + 4}" text-anchor="end" fill="#64748b">{t}</text>')
+    for i, (lb, b, a) in enumerate(zip(labels, before, after)):
+        x0 = L + i * gw + gw * 0.18
+        bw = gw * 0.30
+        for j, (v, col) in enumerate(((b, "#94a3b8"), (a, "#1e3a8a"))):
+            h = (H - B - 20) * max(0, min(100, v)) / 100
+            x = x0 + j * (bw + 3)
+            o.append(f'<rect x="{x}" y="{H - B - h}" width="{bw}" height="{h}" fill="{col}"/>')
+            o.append(f'<text x="{x + bw / 2}" y="{H - B - h - 4}" text-anchor="middle" font-size="11" fill="#334155">{v:.0f}</text>')
+        o.append(f'<text x="{L + i * gw + gw / 2}" y="{H - B + 18}" text-anchor="middle" fill="#334155">{_e(lb)}</text>')
+    o.append(f'<rect x="{W - 170}" y="4" width="10" height="10" fill="#94a3b8"/><text x="{W - 156}" y="13" fill="#334155">설계 전</text>')
+    o.append(f'<rect x="{W - 95}" y="4" width="10" height="10" fill="#1e3a8a"/><text x="{W - 81}" y="13" fill="#334155">AI 설계</text></svg>')
+    return "".join(o)
+
+
+def _tbl(head, rows, left_cols=()) -> str:
+    h = "".join(f"<th>{_e(c)}</th>" for c in head)
+    b = "".join("<tr>" + "".join(f'<td class="{"l" if i in left_cols else ""}">{_e(c)}</td>' for i, c in enumerate(r)) + "</tr>" for r in rows)
+    return f"<table><tr>{h}</tr>{b}</table>"
+
+
+def build_report_html(r: dict, team: str = TEAM_NAME, school: str = SCHOOL_NAME) -> str:
+    p, d, b, st_ = r["params"], r["detail"], r["before_detail"], r["stats"]
+    n_fig, n_tbl = [0], [0]
+
+    def fig(svg, cap):
+        n_fig[0] += 1
+        return f'<figure>{svg}<div class="cap">그림 {n_fig[0]}. {_e(cap)}</div></figure>'
+
+    def tbl(head, rows, cap, left=()):
+        n_tbl[0] += 1
+        return f'<div class="cap" style="margin-bottom:2px"><b>표 {n_tbl[0]}.</b> {_e(cap)}</div>' + _tbl(head, rows, left) + "<br>"
+
+    today = _dt.date.today().strftime("%Y. %m. %d.")
+    gain = r["total"] - r["before_total"]
+    best_k = max(OBJECTIVES, key=lambda k: r["scores"][k] - r["before_scores"][k])
+    worst_k = min(OBJECTIVES, key=lambda k: r["scores"][k])
+    toc = ["행사 개요", "분석 방법", "최적 배치안", "설계 전·후 비교", "설계 이유 (XAI)", "점수 산출 근거", "결론 및 유의사항"]
+
+    s = []
+    s.append(f'<div class="bar"><button onclick="window.print()">🖨️ PDF로 저장 (인쇄 → PDF)</button></div><div class="doc">')
+    s.append(f'<section class="cover"><div class="tag">EVENT ON REPORT</div><h1>{_e(p["name"])}<br>AI 행사장 설계 분석 보고서</h1>'
+             f'<div class="sub">군중 시뮬레이션 기반 최적 배치 결과</div>'
+             f'<div class="meta">{_e(school)}<br>팀명 {_e(team)}<br>{today}</div></section>')
+    s.append('<section class="toc"><h2 style="margin-top:0">목차</h2><ol>' + "".join(f"<li>{t}</li>" for t in toc) + "</ol></section>")
+
+    # 1
+    s.append("<h2>1. 행사 개요</h2>")
+    s.append(f"<p>{_e(p['name'])}은(는) {_e(p['venue'])}({_e(p['location'])})에서 열리는 {_e(p['purpose'])} 행사이다. "
+             f"예상 방문객은 {p['visitors']:,}명이고, 주요 연령대는 {_e(p['age'])}이다.</p>")
+    s.append(tbl(["항목", "내용"], [
+        ["행사 목적 / 분위기", f"{p['purpose']} / {p['mood']}"],
+        ["장소 / 면적", f"{p['venue']} / {p['area_m2']:,}㎡ ({r['shape']['name']})"],
+        ["예상 방문객 / 운영 시간", f"{p['visitors']:,}명 / {p['hours']}"],
+        ["예산 / 예상 시설 비용", f"{p['budget']:,}만원 / {r['cost']['total']:,.0f}만원"],
+    ], "행사 개요", left=(1,)))
+
+    # 2
+    s.append("<h2>2. 분석 방법</h2>")
+    s.append("<p>행사 정보를 입력하면 가상 행사장(디지털 트윈)을 만들고, 여러 배치안을 만들어 군중 이동을 시뮬레이션한 뒤 점수가 가장 높은 안을 고른다.</p>")
+    s.append(f"<p class='li'>• 생성·평가한 배치안: {st_['generated']:,}개 (무작위 {st_['randomly']:,}개 + 변이 {st_['mutated']:,}개)</p>"
+             f"<p class='li'>• 파레토 최적해: {st_['pareto']}개, 배치 구역: {st_['zones']}개</p>"
+             f"<p class='li'>• 평가 목표: {', '.join(OBJ_LABEL[k] for k in OBJECTIVES)}</p>")
+    s.append(tbl(["목표", "가중치"], [[OBJ_LABEL[k], f"{r['weights'][k] * 100:.0f}%"] for k in OBJECTIVES], "평가 목표별 가중치"))
+
+    # 3
+    s.append("<h2>3. 최적 배치안</h2>")
+    s.append(f"<p>종합 점수 {r['total']:.1f}점으로 후보 중 상위 {max(0.1, 100 - st_['rank_pct']):.1f}% 이내의 배치안을 선택했다.</p>")
+    s.append(fig(_svg_layout(r["zones"], r["gates"], r["shape"], "", r["mpu"]), "AI가 제안한 최적 배치도"))
+    s.append(tbl(["구역", "종류", "가로(m)", "세로(m)"], [[z["name"], z["type"], z["w_m"], z["h_m"]] for z in r["zone_sizes"]], "구역별 크기"))
+
+    # 4
+    s.append("<h2>4. 설계 전·후 비교</h2>")
+    s.append(f"<p>종합 점수는 설계 전 {r['before_total']:.1f}점에서 설계 후 {r['total']:.1f}점으로 {gain:+.1f}점 달라졌다. "
+             f"가장 크게 좋아진 항목은 {OBJ_LABEL[best_k]}이다.</p>")
+    s.append('<div class="two">' + fig(_svg_layout(r["before_zones"], r["gates"], r["shape"], "", r["mpu"]), "설계 전(기존) 배치")
+             + fig(_svg_layout(r["zones"], r["gates"], r["shape"], "", r["mpu"]), "AI 최적 배치") + "</div>")
+    s.append(fig(_svg_bars([OBJ_LABEL[k] for k in OBJECTIVES], [r["before_scores"][k] for k in OBJECTIVES],
+                           [r["scores"][k] for k in OBJECTIVES]), "목표별 점수 비교"))
+    s.append(tbl(["평가 항목", "가중치", "설계 전", "설계 후", "등급"],
+                 [[OBJ_LABEL[k], f"{r['weights'][k] * 100:.0f}%", f"{r['before_scores'][k]:.0f}", f"{r['scores'][k]:.0f}", grade(r["scores"][k])] for k in OBJECTIVES],
+                 "목표별 점수와 등급"))
+    s.append(tbl(["지표", "설계 전", "설계 후"], [
+        ["병목 발생율", f"{b['bottleneck']:.0f}%", f"{d['bottleneck']:.0f}%"],
+        ["최대 군중 밀도", f"{b['peak']:.2f}명/㎡", f"{d['peak']:.2f}명/㎡"],
+        ["응급 최대 도달시간", fmt_sec(b["t_max"]), fmt_sec(d["t_max"])],
+        ["응급 평균 도달시간", fmt_sec(b["t_mean"]), fmt_sec(d["t_mean"])],
+        ["사고 위험구역", f"{b['risk_zones']}개소", f"{d['risk_zones']}개소"],
+        ["동선 구역 관통률", f"{b['obstruct'] * 100:.0f}%", f"{d['obstruct'] * 100:.0f}%"],
+    ], "시뮬레이션 지표 비교"))
+
+    # 5
+    s.append("<h2>5. 설계 이유 (XAI)</h2>")
+    s.append("<h3>5-1. 전체 설계 이유</h3>" + "".join(f"<p class='li'>• {_e(_plain(t))}</p>" for t in r["xai"]["reasons"]))
+    s.append("<h3>5-2. 구역별 배치 근거</h3>" + "".join(f"<p class='li'>• <b>{_e(z['name'])}</b>: {_e(_plain(z['text']))}</p>" for z in r["xai"]["zone_reasons"]))
+    if r["xai"]["alternatives"]:
+        s.append("<h3>5-3. 검토했으나 채택하지 않은 대안</h3>" + "".join(
+            f"<p class='li'>• <b>{_e(a['name'])}</b>: {_e(_plain(a['note']))}</p>" for a in r["xai"]["alternatives"]))
+
+    # 6
+    s.append("<h2>6. 점수 산출 근거</h2>")
+    s.append(tbl(["목표", "기본", "목적 보정", "연령대 보정", "최종"], [
+        [OBJ_LABEL[k], f"{r['weight_detail'][k]['base'] * 100:.0f}%", f"{r['weight_detail'][k]['purpose'] * 100:+.0f}%p",
+         f"{r['weight_detail'][k]['age'] * 100:+.0f}%p", f"{r['weight_detail'][k]['final'] * 100:.1f}%"] for k in OBJECTIVES], "가중치 구성"))
+    s.append(tbl(["목표", "세부지표", "설계 전", "설계 후", "만점 기준", "0점 기준", "세부점수", "비중"],
+                 [[e["objLabel"], e["label"], e["v_before"], e["v_after"], e["best_txt"], e["worst_txt"], f"{e['sub_after'] * 100:.0f}", f"{e['w'] * 100:.0f}%"] for e in r["evidence"]],
+                 "세부 지표별 점수 (측정값을 0~100점으로 환산)", left=(1,)))
+    s.append("<div class='box'><b>계산식</b><br>" + "<br>".join(f"{OBJ_LABEL[k]}: {_e(r['formulas'][k])}" for k in OBJECTIVES)
+             + f"<br><b>종합: {_e(r['total_formula'])}</b></div>")
+    s.append("<h3>가정과 한계</h3>" + "".join(f"<p class='li'>• {_e(_plain(a))}</p>" for a in r["assumptions"]))
+
+    # 7
+    s.append("<h2>7. 결론 및 유의사항</h2>")
+    s.append(f"<p>AI 설계안은 종합 {r['total']:.1f}점으로 기존 배치({r['before_total']:.1f}점)보다 {gain:+.1f}점 높다. "
+             f"최대 군중 밀도는 {b['peak']:.2f}→{d['peak']:.2f}명/㎡, 사고 위험구역은 {b['risk_zones']}→{d['risk_zones']}개소로 달라졌다. "
+             f"상대적으로 낮은 항목은 {OBJ_LABEL[worst_k]}({r['scores'][worst_k]:.0f}점)이며, 구역 크기나 출입구 수를 조정해 더 개선해 볼 수 있다.</p>")
+    if r["notes"]:
+        s.append("<h3>유의사항</h3>" + "".join(f"<p class='li'>• {_e(_plain(n))}</p>" for n in r["notes"]))
+    s.append("<div class='note'>이 보고서의 수치는 가상 군중 시뮬레이션으로 얻은 추정값이다. 실제로 행사를 열기 전에는 현장 안전 점검과 관할 기관 협의가 필요하다.</div>")
+    s.append("</div>")
+    return ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'><title>Event ON 보고서</title><style>"
+            + REPORT_CSS + "</style></head><body>" + "".join(s) + "</body></html>")
+
+
+def build_html(r: dict) -> str:  # 예전 이름 호환
+    return build_report_html(r)
+
 
 # ===== UI =====
 
@@ -1612,7 +1774,11 @@ with tab_xai:
 with tab_rep:
     if ss.history:
         R = ss.history[ss.view]["result"]
-        st.markdown(build_markdown(R))
+        rep_html = build_report_html(R)
         d1, d2 = st.columns(2)
-        d1.download_button("⬇️ 리포트(HTML, 인쇄→PDF 저장)", build_html(R), file_name="event_on_report.html", mime="text/html")
-        d2.download_button("⬇️ 리포트(Markdown)", build_markdown(R), file_name="event_on_report.md", mime="text/markdown")
+        d1.download_button("⬇️ 보고서(HTML)", rep_html, file_name="event_on_report.html", mime="text/html")
+        d2.download_button("⬇️ 보고서(Markdown)", build_markdown(R), file_name="event_on_report.md", mime="text/markdown")
+        st.caption("PDF 저장: 아래 보고서 위쪽의 [PDF로 저장] 버튼을 누르고 '대상: PDF로 저장'을 선택한다.")
+        components.html(rep_html, height=900, scrolling=True)
+    else:
+        st.info("먼저 [행사 설계 메인]에서 설계를 실행하면 보고서가 만들어진다.")
