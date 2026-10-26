@@ -216,6 +216,33 @@ def weight_breakdown(p: dict) -> Dict[str, dict]:
     return {k: dict(base=base[k], purpose=pa.get(k, 0.0), age=ag.get(k, 0.0), final=raw[k] / tot) for k in base}
 
 
+COUNT_TYPES = [("food", "🍔 푸드존", 0, 10), ("booth", "🧪 체험부스", 0, 15), ("rest", "🛋️ 휴게공간", 0, 8),
+               ("restroom", "🚻 화장실", 0, 10), ("info", "ℹ️ 안내센터", 0, 5), ("medical", "🏥 응급의료센터", 1, 4)]
+
+
+def recommend_counts(p: dict):
+    """행사 조건 -> 부스 종류별 추천 개수와 이유. (예산 조정 전 값)"""
+    V = p["visitors"]
+    pm, mm, am = PURPOSES[p["purpose"]], MOODS[p["mood"]], AGES[p["age"]]
+    c = dict(
+        food=int(_clamp(round(V / 2200) + 1, 1, 5)),
+        booth=int(_clamp(round(V / 900 * pm["booth"]) + mm["nb"], 2, 10)),
+        rest=int(_clamp(round(1 + pm["rest"] * 0.7 * am["rest"] + mm["nr"] * 0.5), 1, 4)),
+        restroom=int(_clamp(math.ceil(V / 2500 * am["restroom"]) + 1, 2, 6)),
+        info=2 if V >= 5000 else 1,
+        medical=2 if V >= 8000 else 1,
+    )
+    why = dict(
+        food=f"방문객 {V:,}명이면 약 2,200명당 1곳 + 1곳이 줄이 길어지지 않는 수준이라고 계산했다.",
+        booth=f"행사 목적('{p['purpose']}')과 분위기('{p['mood']}')를 보고, 방문객 900명당 체험 부스가 필요한 정도를 반영했다.",
+        rest=f"연령대('{p['age']}')에 따라 앉아서 쉬는 사람이 달라서 이 정도로 계산했다.",
+        restroom=f"방문객 2,500명당 1곳 + 1곳을 기본으로 하고 연령대('{p['age']}')를 반영했다.",
+        info="방문객이 5,000명 이상이면 2곳, 아니면 1곳으로 했다.",
+        medical="방문객이 8,000명 이상이면 2곳, 아니면 1곳이다. 응급의료센터는 최소 1곳은 꼭 둔다.",
+    )
+    return c, why
+
+
 def build_zones(p: dict, custom: List[dict]):
     """입력 조건 -> 구역 목록. 예산이 부족하면 부스/푸드 수를 줄인다."""
     V = p["visitors"]
@@ -239,6 +266,11 @@ def build_zones(p: dict, custom: List[dict]):
     n_info = 2 if V >= 5000 else 1
     n_med = 2 if V >= 8000 else 1
     n_custom = sum(int(c.get("count", 1)) for c in custom)
+    manual_counts = p.get("counts")
+    if manual_counts:
+        n_food, n_booth, n_rest = int(manual_counts["food"]), int(manual_counts["booth"]), int(manual_counts["rest"])
+        n_restroom, n_info = int(manual_counts["restroom"]), int(manual_counts["info"])
+        n_med = max(1, int(manual_counts["medical"]))
 
     def total_cost():
         stage = 800 + V * 0.15
@@ -248,7 +280,7 @@ def build_zones(p: dict, custom: List[dict]):
 
     budget = p["budget"]
     orig = (n_food, n_booth)
-    while total_cost() > budget and (n_booth > 1 or n_food > 1):
+    while (not manual_counts) and total_cost() > budget and (n_booth > 1 or n_food > 1):
         if n_booth >= n_food and n_booth > 1:
             n_booth -= 1
         elif n_food > 1:
@@ -258,7 +290,9 @@ def build_zones(p: dict, custom: List[dict]):
     if (n_food, n_booth) != orig:
         notes.append(f"예산({budget:,}만원) 제약으로 푸드존 {orig[0]}→{n_food}개, 체험부스 {orig[1]}→{n_booth}개로 조정했습니다.")
     cost = total_cost()
-    if cost > budget:
+    if manual_counts and cost > budget:
+        notes.append(f"직접 정한 부스 구성의 예상 비용 {cost:,.0f}만원이 예산({budget:,}만원)을 넘는다. 부스 수를 줄이거나 예산을 늘려 보자.")
+    elif cost > budget:
         notes.append(f"필수 시설만으로도 예상 비용 {cost:,.0f}만원이 예산을 초과합니다. 예산 또는 사용자 부스 수를 조정하세요.")
 
     zones: List[dict] = []
@@ -954,6 +988,34 @@ def _llm_call(messages: list) -> str:
     with urllib.request.urlopen(req, timeout=40) as r:
         out = json.loads(r.read().decode("utf-8"))
     return out["choices"][0]["message"]["content"]
+
+
+def ai_recommend_counts(p: dict):
+    """AI(LLM)에게 부스 구성을 추천받는다. 키가 없거나 실패하면 규칙 기반 추천을 쓴다.
+    반환: (counts, reasons, source)  source = 'ai' | 'rule' | 'rule(AI 연결 실패)'"""
+    rec, why = recommend_counts(p)
+    if not llm_ready():
+        return rec, why, "rule"
+    sysm = ("너는 학교 축제 행사장 기획을 돕는 AI다. 쉬운 한국어 평서체로 쓴다. 아래 행사 조건에 맞는 부스 종류별 개수를 추천한다.\n"
+            "반드시 JSON 한 개만 출력한다. 형식: {\"counts\":{\"food\":3,\"booth\":6,\"rest\":2,\"restroom\":3,\"info\":1,\"medical\":1},"
+            "\"reasons\":{\"food\":\"이유 한 문장\",\"booth\":\"...\",\"rest\":\"...\",\"restroom\":\"...\",\"info\":\"...\",\"medical\":\"...\"}}\n"
+            "food=푸드존, booth=체험부스, rest=휴게공간, restroom=화장실, info=안내센터, medical=응급의료센터(최소 1).\n"
+            "범위: food 0~10, booth 0~15, rest 0~8, restroom 0~10, info 0~5, medical 1~4. 예산을 넘지 않게 하고, 모르는 수치는 지어내지 않는다.")
+    usr = (f"행사 목적: {p['purpose']}, 분위기: {p['mood']}, 연령대: {p['age']}, 예상 방문객: {p['visitors']:,}명, "
+           f"예산: {p['budget']:,}만원, 면적: {p['area_m2']:,}㎡.\n참고(규칙 기반 계산값): "
+           + ", ".join(f"{k} {v}" for k, v in rec.items()))
+    try:
+        d = json.loads(re.search(r"\{.*\}", _llm_call([dict(role="system", content=sysm), dict(role="user", content=usr)]), re.S).group(0))
+        cs, rs = {}, {}
+        for k, _lab, lo, hi in COUNT_TYPES:
+            try:
+                cs[k] = int(min(hi, max(lo, int((d.get("counts") or {}).get(k, rec[k])))))
+            except Exception:
+                cs[k] = rec[k]
+            rs[k] = str((d.get("reasons") or {}).get(k, why[k]))[:120]
+        return cs, rs, "ai"
+    except Exception:
+        return rec, why, "rule(AI 연결 실패)"
 
 
 def plan_from_json(txt: str) -> dict:
@@ -1710,6 +1772,38 @@ with st.sidebar:
     gates = st.selectbox("출입구 수", [2, 4, 6], index=1, format_func=lambda n: f"{n}개")
     n_cand = st.select_slider("탐색할 배치안 수", [500, 1000, 2000, 3000, 5000], value=2000)
 
+    st.markdown("### 🎪 부스 구성 (종류·개수)")
+    _tmp_p = dict(purpose=purpose, mood=mood, age=age, visitors=int(visitors), budget=int(budget), area_m2=int(area))
+    _rec, _why = recommend_counts(_tmp_p)
+
+    def _fill_ai(_p=_tmp_p):
+        _c, _r, _src = ai_recommend_counts(_p)
+        for _k, _v in _c.items():
+            st.session_state[f"cnt_{_k}"] = _v
+        st.session_state["count_reasons"] = (_r, _src)
+
+    count_mode = st.radio("부스 개수를 정하는 방법", ["AI 추천으로 자동", "직접 정하기"], horizontal=True, key="count_mode",
+                          help="자동: 방문객·목적·분위기·연령대·예산을 보고 정한다. 직접: 아래 칸에 원하는 개수를 넣는다.")
+    if count_mode == "직접 정하기":
+        for _k, _lab, _lo, _hi in COUNT_TYPES:
+            if f"cnt_{_k}" not in st.session_state:
+                st.session_state[f"cnt_{_k}"] = _rec[_k]
+            st.number_input(_lab, _lo, _hi, step=1, key=f"cnt_{_k}")
+        st.button("🤖 AI에게 추천받아 채우기", on_click=_fill_ai, use_container_width=True)
+        counts = {_k: int(st.session_state[f"cnt_{_k}"]) for _k, *_ in COUNT_TYPES}
+        _cr = st.session_state.get("count_reasons")
+        if _cr:
+            with st.expander("추천 이유 보기" + (" (AI)" if _cr[1] == "ai" else " (규칙 계산)")):
+                for _k, _lab, *_ in COUNT_TYPES:
+                    st.markdown(f"- **{_lab}**: {_cr[0].get(_k, '')}")
+    else:
+        counts = None
+        st.caption("AI 추천: " + " · ".join(f"{_lab.split(' ')[1]} {_rec[_k]}개" for _k, _lab, *_ in COUNT_TYPES))
+        with st.expander("추천 이유 보기"):
+            for _k, _lab, *_ in COUNT_TYPES:
+                st.markdown(f"- **{_lab}**: {_why[_k]}")
+        st.caption("예산을 넘으면 체험부스·푸드존을 줄여서 맞춘다. 개수를 직접 정하면 줄이지 않는다.")
+
     with st.expander("📐 구역 크기 조절 (100% = 기본)"):
         st.caption("바꾼 뒤 상단의 '✦ AI 설계 생성 / 재배치'를 누르면 반영됩니다. 구역이 너무 커서 들어가지 않으면 자동으로 줄이고 알려드립니다.")
         size_scale = {}
@@ -1750,7 +1844,7 @@ with st.sidebar:
 def current_params():
     return dict(name=name, purpose=purpose, budget=int(budget), visitors=int(visitors), venue=venue,
                 location=location, area_m2=int(area), hours=hours, mood=mood, age=age, gates=int(gates),
-                shape=shape, size_scale=dict(size_scale))
+                shape=shape, size_scale=dict(size_scale), counts=(dict(counts) if counts else None))
 
 
 def make_sig():
