@@ -702,7 +702,7 @@ def _attach_why(zs, zwhy, before):
     return zs
 
 
-def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], n_candidates: int = 3000,
+def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], manual_layout: str = None, n_candidates: int = 3000,
              seed: int = 42, progress: Optional[Callable[[float, str], None]] = None) -> dict:
     prog = progress or (lambda f, m: None)
     rng = np.random.default_rng(seed)
@@ -1154,6 +1154,7 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
   <button id="bModeB" onclick="setMode('before')">설계 전(기존) 배치</button>
   <span style="width:10px"></span>
   <button id="b3d" class="on" onclick="setView(true)">🧊 3D 입체 설계도</button>
+  <button id="bEdit" class="on" onclick="toggleEdit()">🛠️ 편집 모드</button>
   <button id="b2d" onclick="setView(false)">🗺️ 2D 평면도</button>
   <button id="bDome" class="on" onclick="togDome()" style="display:none">🏛️ 지붕 표시</button>
   <span style="flex:1"></span>
@@ -1194,7 +1195,7 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
 <script>
 const D = __DATA__;
 const WW=160, WH=100, GX=40, GY=25;
-let showPeople=true; let selZ=-1; let mode='after', sim=true, rain=false, tHour=14, tlTimer=null, is3d=true;
+let showPeople=true; let selZ=-1; let mode='after', sim=true, rain=false, tHour=14, tlTimer=null, is3d=true, isEdit=false, dragging=false, dragStart={'x':0,'y':0};
 const $=id=>document.getElementById(id);
 const cv=$('cv'), pp=$('pp'), hm2=$('hm2');
 const cx=cv.getContext('2d'), px=pp.getContext('2d'), h2=hm2.getContext('2d');
@@ -1306,9 +1307,33 @@ function esc(t){ return String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','
 function applyLab(){ if(G3) G3.traverse(o=>{ if(o.userData&&o.userData.lab!==undefined) o.visible=(o.userData.lab===selZ); }); if(!is3d) drawBase(); }
 function showInfo(i){ const z=Z()[i]; if(!z) return; selZ=i; applyLab(); const el=$('zinfo'); el.style.setProperty('--c',z.color);
   const why=(z.why&&z.why.length)?z.why:['이 구역에 대한 근거가 없다.'];
-  el.innerHTML='<button class="x" onclick="closeInfo()">✕</button><h5>'+z.icon+' '+esc(z.name)+'</h5><div class="sub">'+(mode==='after'?'왜 여기가 최적일까?':'설계 전(기존) 배치')+'</div><ul>'+why.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>'+((z.about&&z.about.length)?'<div class="sub" style="margin-top:8px">📋 이 부스는 어떤 곳일까?</div><ul>'+z.about.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>':'');
+  el.innerHTML='<button class="x" onclick="closeInfo()">✕</button><h5>'+z.icon+' '+esc(z.name)+'</h5><div class="sub">'+(mode==='after'?'왜 여기가 최적일까?':'설계 전(기존) 배치')+'</div><ul>'+why.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul
+<div class='edit-ui' style='margin-top:10px; padding-top:10px; border-top:1px solid #eee; display:flex; flex-direction:column; gap:4px;'>
+  <button onclick='handleEdit(selZ, "del")' style='background:#fee2e2; color:#dc2626; border:1px solid #fecaca; font-size:11px;'>🗑️ 삭제</button>
+  <div style='display:grid; grid-template-columns:1fr 1fr; gap:2px;'>
+    <button onclick='handleEdit(selZ, "w", document.getElementById("szW").value)' style='font-size:10px;'>↔️ 가로</button>
+    <button onclick='handleEdit(selZ, "h", document.getElementById("szH").value)' style='font-size:10px;'>↕️ 세로</button>
+  </div>
+  <div style='display:flex; gap:2px;'>
+    <input id='szW' type='number' style='width:45%; font-size:10px; border:1px solid #cbd5e1;' placeholder='W'>
+    <input id='szH' type='number' style='width:45%; font-size:10px; border:1px solid #cbd5e1;' placeholder='H'>
+  </div>
+</div>'+((z.about&&z.about.length)?'<div class="sub" style="margin-top:8px">📋 이 부스는 어떤 곳일까?</div><ul>'+z.about.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>':'');
   el.style.display='block'; }
 function closeInfo(){ $('zinfo').style.display='none'; selZ=-1; applyLab(); }
+function closeInfo(){ $('zinfo').style.display='none'; selZ=-1; applyEdit(); }
+function toggleEdit(){ isEdit=!isEdit; $('bEdit').className=isEdit?'on':''; applyEdit(); }
+function handleEdit(i, action, val){
+    if(i<0) return;
+    const Zs=Z(); const z=Zs[i];
+    if(action==='del'){ z.deleted=true; }
+    else if(action==='w'){ z.w=Math.max(3,parseFloat(val)); }
+    else if(action==='h'){ z.h=Math.max(3,parseFloat(val)); }
+    if(is3d) buildScene3(); else drawBase();
+    const payload = {seq:Date.now(), manual_layout: JSON.stringify(Zs.filter(z=>!z.deleted))};
+    window.parent.postMessage({type:'streamlit:setComponentValue', value: payload}, '*');
+}
+function applyEdit(){ if(is3d) buildScene3(); else drawBase(); }
 function pickZone2D(mx,my){ const Zs=Z(); for(let i=Zs.length-1;i>=0;i--){ const z=Zs[i]; if(mx>=z.x&&mx<=z.x+z.w&&my>=z.y&&my<=z.y+z.h) return i; } return -1; }
 function nearestGate(z){ let b=D.gates[0],bd=1e9; D.gates.forEach(g=>{const d=Math.hypot(g.x-(z.x+z.w/2),g.y-(z.y+z.h/2)); if(d<bd){bd=d;b=g;}}); return b; }
 function drawPeople(){ px.clearRect(0,0,W,H);
@@ -1409,7 +1434,7 @@ function initR3(){
   e.addEventListener('mousedown',ev=>{dx0=ev.clientX;dy0=ev.clientY;});
   e.addEventListener('mouseup',ev=>{ if(Math.hypot(ev.clientX-dx0,ev.clientY-dy0)>4) return; const r=e.getBoundingClientRect(); RC.setFromCamera(new THREE.Vector2((ev.clientX-r.left)/r.width*2-1,-((ev.clientY-r.top)/r.height)*2+1),C3);
     const hits=RC.intersectObjects(G3.children,true); for(const h of hits){ let o=h.object; while(o&&o.userData.zi===undefined) o=o.parent; if(o&&o.userData.zi>=0){ showInfo(o.userData.zi); return; } } closeInfo(); });
-  e.onmousedown=ev=>{drag=true;lx=ev.clientX;ly=ev.clientY;}; window.addEventListener('mouseup',()=>drag=false);
+  e.onmousedown=ev=>{ if(isEdit) return; drag=true;lx=ev.clientX;ly=ev.clientY; }; window.addEventListener('mouseup',()=>drag=false);
   e.onmousemove=ev=>{ if(!drag)return; yaw-=(ev.clientX-lx)*.008; pitch=Math.min(1.35,Math.max(.3,pitch+(ev.clientY-ly)*.006)); lx=ev.clientX; ly=ev.clientY; };
   e.addEventListener('wheel',ev=>{ev.preventDefault(); zoom3=Math.min(3.2,Math.max(.6,zoom3*(ev.deltaY<0?1.1:.9)));},{passive:false});
   e.addEventListener('touchstart',ev=>{drag=true;lx=ev.touches[0].clientX;ly=ev.touches[0].clientY;},{passive:true});
@@ -1451,7 +1476,23 @@ function togRain(){ rain=!rain; const b=$('bRain'); b.className='warn'+(rain?' o
   agents.forEach(a=>{ if(!rain&&!a.leaving) setTarget(a); }); drawBase(); if(R3) buildScene3(); }
 function setTime(h){ tHour=h; $('tSl').value=h; $('tTxt').textContent=h+':00'; $('tDesc').textContent=descT(h); }
 function togTl(){ const b=$('bTl'); if(tlTimer){clearInterval(tlTimer);tlTimer=null;b.textContent='▶ 재생';} else { b.textContent='⏸ 일시정지'; tlTimer=setInterval(()=>{ let n=tHour+1; if(n>20)n=10; setTime(n); },2500); } }
-cv.addEventListener('click',ev=>{ const r=cv.getBoundingClientRect(); const i=pickZone2D((ev.clientX-r.left)/r.width*WW,(ev.clientY-r.top)/r.height*WH); if(i>=0) showInfo(i); else closeInfo(); });
+cv.addEventListener('mousedown', ev => {
+        const r=cv.getBoundingClientRect(); const i=pickZone2D((ev.clientX-r.left)/r.width*WW,(ev.clientY-r.top)/r.height*WH);
+        if(i>=0 && isEdit){ selZ=i; dragStart={x:ev.clientX, y:ev.clientY}; dragging=true; return; }
+        if(i>=0) showInfo(i); else closeInfo();
+    });
+    cv.addEventListener('mousemove', ev => {
+        if(isEdit && dragging){
+            const dx=(ev.clientX-dragStart.x)/S; const dy=(ev.clientY-dragStart.y)/S;
+            const z=Z()[selZ]; z.x += dx; z.y += dy; dragStart={x:ev.clientX, y:ev.clientY}; drawBase();
+        }
+    });
+    cv.addEventListener('mouseup', () => { dragging=false; });
+    cv.addEventListener('click',ev=>{
+        const r=cv.getBoundingClientRect(); const i=pickZone2D((ev.clientX-r.left)/r.width*WW,(ev.clientY-r.top)/r.height*WH);
+        if(i>=0 && isEdit) return;
+        if(i>=0) showInfo(i); else closeInfo();
+    });
 $('zlist').addEventListener('click',ev=>{ const t=ev.target.closest('span[data-i]'); if(t) showInfo(+t.dataset.i); });
 window.addEventListener('resize',resize);
 setTime(14); resize(); initR3(); setView(is3d&&!!R3); setMode('after'); resize(); requestAnimationFrame(loop);
@@ -1902,6 +1943,9 @@ if b1.button("✦ AI 설계 생성 / 재배치", type="primary", use_container_w
     ss.pending = "조건 입력 설계"
 if not ss.history and not ss.pending:
     ss.pending = "기본 설계"
+if ss.pending and 'MANUAL' in ss.pending:
+        ss.manual_layout = ss.pending.replace('MANUAL:', '')
+        ss.pending = None
 if ss.pending:
     _label, ss.pending = ss.pending, None
     run_design(_label)
