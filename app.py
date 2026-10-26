@@ -7,9 +7,7 @@ import datetime as _dt
 import html as _html
 import json
 import math
-import os
 import re
-import urllib.request
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
@@ -216,33 +214,6 @@ def weight_breakdown(p: dict) -> Dict[str, dict]:
     return {k: dict(base=base[k], purpose=pa.get(k, 0.0), age=ag.get(k, 0.0), final=raw[k] / tot) for k in base}
 
 
-COUNT_TYPES = [("food", "🍔 푸드존", 0, 10), ("booth", "🧪 체험부스", 0, 15), ("rest", "🛋️ 휴게공간", 0, 8),
-               ("restroom", "🚻 화장실", 0, 10), ("info", "ℹ️ 안내센터", 0, 5), ("medical", "🏥 응급의료센터", 1, 4)]
-
-
-def recommend_counts(p: dict):
-    """행사 조건 -> 부스 종류별 추천 개수와 이유. (예산 조정 전 값)"""
-    V = p["visitors"]
-    pm, mm, am = PURPOSES[p["purpose"]], MOODS[p["mood"]], AGES[p["age"]]
-    c = dict(
-        food=int(_clamp(round(V / 2200) + 1, 1, 5)),
-        booth=int(_clamp(round(V / 900 * pm["booth"]) + mm["nb"], 2, 10)),
-        rest=int(_clamp(round(1 + pm["rest"] * 0.7 * am["rest"] + mm["nr"] * 0.5), 1, 4)),
-        restroom=int(_clamp(math.ceil(V / 2500 * am["restroom"]) + 1, 2, 6)),
-        info=2 if V >= 5000 else 1,
-        medical=2 if V >= 8000 else 1,
-    )
-    why = dict(
-        food=f"방문객 {V:,}명이면 약 2,200명당 1곳 + 1곳이 줄이 길어지지 않는 수준이라고 계산했다.",
-        booth=f"행사 목적('{p['purpose']}')과 분위기('{p['mood']}')를 보고, 방문객 900명당 체험 부스가 필요한 정도를 반영했다.",
-        rest=f"연령대('{p['age']}')에 따라 앉아서 쉬는 사람이 달라서 이 정도로 계산했다.",
-        restroom=f"방문객 2,500명당 1곳 + 1곳을 기본으로 하고 연령대('{p['age']}')를 반영했다.",
-        info="방문객이 5,000명 이상이면 2곳, 아니면 1곳으로 했다.",
-        medical="방문객이 8,000명 이상이면 2곳, 아니면 1곳이다. 응급의료센터는 최소 1곳은 꼭 둔다.",
-    )
-    return c, why
-
-
 def build_zones(p: dict, custom: List[dict]):
     """입력 조건 -> 구역 목록. 예산이 부족하면 부스/푸드 수를 줄인다."""
     V = p["visitors"]
@@ -266,11 +237,6 @@ def build_zones(p: dict, custom: List[dict]):
     n_info = 2 if V >= 5000 else 1
     n_med = 2 if V >= 8000 else 1
     n_custom = sum(int(c.get("count", 1)) for c in custom)
-    manual_counts = p.get("counts")
-    if manual_counts:
-        n_food, n_booth, n_rest = int(manual_counts["food"]), int(manual_counts["booth"]), int(manual_counts["rest"])
-        n_restroom, n_info = int(manual_counts["restroom"]), int(manual_counts["info"])
-        n_med = max(1, int(manual_counts["medical"]))
 
     def total_cost():
         stage = 800 + V * 0.15
@@ -280,7 +246,7 @@ def build_zones(p: dict, custom: List[dict]):
 
     budget = p["budget"]
     orig = (n_food, n_booth)
-    while (not manual_counts) and total_cost() > budget and (n_booth > 1 or n_food > 1):
+    while total_cost() > budget and (n_booth > 1 or n_food > 1):
         if n_booth >= n_food and n_booth > 1:
             n_booth -= 1
         elif n_food > 1:
@@ -290,9 +256,7 @@ def build_zones(p: dict, custom: List[dict]):
     if (n_food, n_booth) != orig:
         notes.append(f"예산({budget:,}만원) 제약으로 푸드존 {orig[0]}→{n_food}개, 체험부스 {orig[1]}→{n_booth}개로 조정했습니다.")
     cost = total_cost()
-    if manual_counts and cost > budget:
-        notes.append(f"직접 정한 부스 구성의 예상 비용 {cost:,.0f}만원이 예산({budget:,}만원)을 넘는다. 부스 수를 줄이거나 예산을 늘려 보자.")
-    elif cost > budget:
+    if cost > budget:
         notes.append(f"필수 시설만으로도 예상 비용 {cost:,.0f}만원이 예산을 초과합니다. 예산 또는 사용자 부스 수를 조정하세요.")
 
     zones: List[dict] = []
@@ -663,46 +627,7 @@ def _zone_json(zones, L):
     return out
 
 
-BOOTH_ABOUT = {
-    "stage": ("공연·무대 행사를 하는 곳", "많은 사람이 한꺼번에 모여서 보기 때문에 행사장에서 가장 넓은 공간이 필요하다."),
-    "food": ("간식·음료를 파는 곳", "줄이 길어지기 쉬워서 주변에 줄 설 공간이 필요하다."),
-    "booth": ("학생들이 체험 활동을 하는 곳", "한 팀씩 돌아가며 체험해서 사람이 오래 머문다."),
-    "rest": ("앉아서 쉬는 곳", "사람이 오래 머물러서 시끄러운 무대와 떨어진 곳이 좋다."),
-    "medical": ("다친 사람을 돕는 응급의료센터", "어디서든 빨리 닿아야 해서 출입구와 가깝고 길이 막히지 않아야 한다."),
-    "info": ("길 안내와 분실물을 맡는 곳", "처음 온 사람이 바로 찾을 수 있게 출입구 근처가 좋다."),
-    "restroom": ("화장실", "많은 사람이 오가서 무대·푸드존과 적당히 떨어뜨려야 한다."),
-    "custom": ("우리 팀이 직접 추가한 부스", "추가할 때 고른 구분의 인기도를 기준으로 배치했다."),
-}
-
-
-def _about(z, att_total):
-    t = z.get("type", "custom")
-    kind, why = BOOTH_ABOUT.get(t, BOOTH_ABOUT["custom"])
-    out = [f"종류: {ZONE_META.get(t, ZONE_META['custom'])['label']} — {kind}.", f"특징: {why}",
-           f"크기: 가로 약 {z['w']:.0f} × 세로 약 {z['h']:.0f} (행사장 좌표 기준)"]
-    if t != "medical" and att_total:
-        out.append(f"인기도: 전체 방문 중 약 {float(z['attract']) / att_total * 100:.0f}%가 이곳을 찾는다고 가정했다.")
-    out.append(f"설치 비용: 약 {COST.get(t, 150):,}만원으로 계산했다.")
-    return out
-
-
-def _attach_why(zs, zwhy, before):
-    _att = sum(float(q.get("attract", 0)) for q in zs if q.get("type") != "medical") or 1.0
-    for z in zs:
-        z["about"] = _about(z, _att)
-    for j, z in enumerate(zs):
-        w = zwhy.get(j)
-        if not w:
-            continue
-        if before:
-            z["why"] = [f"설계 전(기존) 배치의 위치이다. 이 자리의 최대 밀집도는 {w['dens_before']:.2f}명/㎡이다.",
-                        f"AI 최적 배치에서는 {w['dens']:.2f}명/㎡로 바뀐다. 'AI 최적 배치'를 눌러 비교해 보자."]
-        else:
-            z["why"] = w["why"]
-    return zs
-
-
-def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], manual_layout: str = None, n_candidates: int = 3000,
+def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], n_candidates: int = 3000,
              seed: int = 42, progress: Optional[Callable[[float, str], None]] = None) -> dict:
     prog = progress or (lambda f, m: None)
     rng = np.random.default_rng(seed)
@@ -798,7 +723,6 @@ def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], manual_la
     n_z = len(zones)
     near = det["near_gate"]
     zr = []
-    zwhy = {}
     for j, z in enumerate(zones):
         gaps = [rect_gap(L, j, k) * mpu for k in range(n_z) if k != j]
         gap = min(gaps) if gaps else 0
@@ -819,21 +743,6 @@ def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], manual_la
         else:
             txt = f"인접 구역과 {gap:.0f}m 이격, 밀집도 {dz:.2f}명/㎡로 병목 없이 수용."
         zr.append(dict(name=z["name"], icon=z["icon"], text=txt))
-        # 클릭 시 보여 줄 근거 (모두 위 시뮬레이션에서 계산한 값)
-        _att = sum(float(q["attract"]) for q in zones if q["type"] != "medical") or 1.0
-        _share = float(z["attract"]) / _att
-        cxa, cya = L[j][0] + L[j][2] / 2, L[j][1] + L[j][3] / 2
-        cxb, cyb = Lb[j][0] + Lb[j][2] / 2, Lb[j][1] + Lb[j][3] / 2
-        moved = math.hypot(cxa - cxb, cya - cyb) * mpu
-        lines = [txt]
-        if t_ != "medical":
-            lines.append(f"예상 방문 비중 약 {_share * 100:.0f}%(방문객 {params['visitors']:,}명 기준 약 {params['visitors'] * _share:,.0f}명)이다. 이 인원이 모여도 밀집도가 낮게 유지되는 자리에 두었다.")
-        lines.append(f"설계 전 위치의 최대 밀집도는 {detb['zone_dens'][j]:.2f}명/㎡, 이 위치는 {dz:.2f}명/㎡이다.")
-        if gaps:
-            lines.append(f"가장 가까운 다른 구역과 {gap:.0f}m 떨어져 있고, 출입구까지는 {near[j]:.0f}m이다.")
-        lines.append(f"설계 전 위치에서 약 {moved:.0f}m 옮겼다.")
-        lines.append(f"이런 배치안 {len(cands):,}개를 같은 방식으로 점수를 매겨 비교했고, 종합 {tot:.1f}점으로 가장 높았던 안이다.")
-        zwhy[j] = dict(why=lines, dens=dz, dens_before=float(detb['zone_dens'][j]))
 
     alts = []
     for key, nm in (("safety", "안전 최우선안"), ("cong", "혼잡 최소화안"), ("flow", "동선 최단안")):
@@ -879,7 +788,7 @@ def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], manual_la
 
     prog(1.0, "완료")
     return dict(
-        zones=_attach_why(_zone_json(zones, L), zwhy, False), before_zones=_attach_why(_zone_json(zones, Lb), zwhy, True), gates=gates,
+        zones=_zone_json(zones, L), before_zones=_zone_json(zones, Lb), gates=gates,
         scores={k: float(sc[i]) for i, k in enumerate(OBJECTIVES)},
         before_scores={k: float(scb[i]) for i, k in enumerate(OBJECTIVES)},
         total=tot, before_total=float(scb @ wvec),
@@ -930,139 +839,6 @@ def _dir_ranges(c: str):
             else:
                 xr, yr = rng_[:2], rng_[2:]
     return found, xr, yr
-
-
-# ===== AI ASSISTANT (LLM) =====
-# 키가 없으면 기존 규칙 기반 해석(parse_command)으로 자동 전환한다.
-def _llm_cfg():
-    def sec(k):
-        try:
-            return str(st.secrets.get(k, "") or "")
-        except Exception:
-            return ""
-    key = sec("LLM_API_KEY") or os.environ.get("LLM_API_KEY", "")
-    base = sec("LLM_BASE_URL") or os.environ.get("LLM_BASE_URL", "") or "https://api.openai.com/v1"
-    model = sec("LLM_MODEL") or os.environ.get("LLM_MODEL", "") or "gpt-4o-mini"
-    return key, base.rstrip("/"), model
-
-
-def llm_ready() -> bool:
-    return bool(_llm_cfg()[0])
-
-
-def _llm_context(R: dict, P: dict, custom: list, pins: dict) -> str:
-    """AI 에게 줄 현재 설계 상태. 모두 시뮬레이션에서 나온 값이다."""
-    rows = []
-    for z in R["zones"]:
-        cx_ = (z["x"] + z["w"] / 2) / 160.0
-        cy_ = (z["y"] + z["h"] / 2) / 100.0
-        rows.append(f"- {z['name']}(종류 {z['type']}): 중심 가로 {cx_:.2f}, 세로 {cy_:.2f} (0=왼쪽/위, 1=오른쪽/아래)"
-                    + (" | 근거: " + " / ".join(z.get("why", [])[:3]) if z.get("why") else ""))
-    sc = ", ".join(f"{OBJ_LABEL[k]} {R['scores'][k]:.0f}" for k in OBJECTIVES)
-    return (f"행사: {P['name']}, 방문객 {P['visitors']:,}명, 면적 {P['area_m2']:,}㎡, 모양 {R['shape']['name']}\n"
-            f"종합 {R['total']:.1f}점 (설계 전 {R['before_total']:.1f}점). 목표별 점수: {sc}\n"
-            f"고정된 위치 제약: {', '.join(pins.keys()) or '없음'}\n추가한 부스: {', '.join(c['name'] + ' ' + str(c['count']) + '개' for c in custom) or '없음'}\n"
-            "현재 배치:\n" + "\n".join(rows))
-
-
-_LLM_SYSTEM = (
-    "너는 학교 축제 행사장 배치를 도와주는 AI 어시스턴트다. 고등학생이 쓰는 앱이므로 쉬운 한국어 평서체로 짧게 답한다.\n"
-    "아래 '현재 상태'에 있는 값만 근거로 말하고, 없는 수치는 지어내지 않는다.\n"
-    "반드시 JSON 한 개만 출력한다. 형식:\n"
-    '{"reply":"사용자에게 보여 줄 말","pins":[{"type":"stage","x":[0.6,1.0],"y":[0.0,1.0]}],'
-    '"add":[{"name":"포토존","cat":"체험","count":2}],"remove_pins":["stage"],"redesign":true}\n'
-    "- type 은 stage, food, booth, rest, medical, info, restroom, custom 중 하나.\n"
-    "- x, y 는 행사장을 0~1 로 본 범위이다. 폭은 0.15 이상으로 한다. (오른쪽 = x [0.65,1.0], 왼쪽 = x [0,0.35], 위 = y [0,0.35], 아래 = y [0.65,1.0], 중앙 = x [0.35,0.65] y [0.35,0.65])\n"
-    "- cat 은 체험, 푸드, 휴게, 기타 중 하나. count 는 1~6.\n"
-    "- 배치를 바꾸거나 부스를 더하라는 요청이면 redesign 을 true 로 한다. 질문이나 설명 요청이면 pins, add 는 비우고 redesign 을 false 로 하고 reply 에서 근거를 설명한다.\n"
-    "- 사용자가 무리한 요청을 하면 reply 에서 이유를 말하고 가능한 대안을 제안한다."
-)
-
-
-def _llm_call(messages: list) -> str:
-    key, base, model = _llm_cfg()
-    body = json.dumps(dict(model=model, messages=messages, temperature=0.2,
-                           response_format=dict(type="json_object"))).encode("utf-8")
-    req = urllib.request.Request(base + "/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        out = json.loads(r.read().decode("utf-8"))
-    return out["choices"][0]["message"]["content"]
-
-
-def ai_recommend_counts(p: dict):
-    """AI(LLM)에게 부스 구성을 추천받는다. 키가 없거나 실패하면 규칙 기반 추천을 쓴다.
-    반환: (counts, reasons, source)  source = 'ai' | 'rule' | 'rule(AI 연결 실패)'"""
-    rec, why = recommend_counts(p)
-    if not llm_ready():
-        return rec, why, "rule"
-    sysm = ("너는 학교 축제 행사장 기획을 돕는 AI다. 쉬운 한국어 평서체로 쓴다. 아래 행사 조건에 맞는 부스 종류별 개수를 추천한다.\n"
-            "반드시 JSON 한 개만 출력한다. 형식: {\"counts\":{\"food\":3,\"booth\":6,\"rest\":2,\"restroom\":3,\"info\":1,\"medical\":1},"
-            "\"reasons\":{\"food\":\"이유 한 문장\",\"booth\":\"...\",\"rest\":\"...\",\"restroom\":\"...\",\"info\":\"...\",\"medical\":\"...\"}}\n"
-            "food=푸드존, booth=체험부스, rest=휴게공간, restroom=화장실, info=안내센터, medical=응급의료센터(최소 1).\n"
-            "범위: food 0~10, booth 0~15, rest 0~8, restroom 0~10, info 0~5, medical 1~4. 예산을 넘지 않게 하고, 모르는 수치는 지어내지 않는다.")
-    usr = (f"행사 목적: {p['purpose']}, 분위기: {p['mood']}, 연령대: {p['age']}, 예상 방문객: {p['visitors']:,}명, "
-           f"예산: {p['budget']:,}만원, 면적: {p['area_m2']:,}㎡.\n참고(규칙 기반 계산값): "
-           + ", ".join(f"{k} {v}" for k, v in rec.items()))
-    try:
-        d = json.loads(re.search(r"\{.*\}", _llm_call([dict(role="system", content=sysm), dict(role="user", content=usr)]), re.S).group(0))
-        cs, rs = {}, {}
-        for k, _lab, lo, hi in COUNT_TYPES:
-            try:
-                cs[k] = int(min(hi, max(lo, int((d.get("counts") or {}).get(k, rec[k])))))
-            except Exception:
-                cs[k] = rec[k]
-            rs[k] = str((d.get("reasons") or {}).get(k, why[k]))[:120]
-        return cs, rs, "ai"
-    except Exception:
-        return rec, why, "rule(AI 연결 실패)"
-
-
-def plan_from_json(txt: str) -> dict:
-    """AI 의 JSON 답을 엔진이 받는 형식으로 바꾼다. 이상한 값은 버린다."""
-    m = re.search(r"\{.*\}", txt, re.S)
-    d = json.loads(m.group(0) if m else txt)
-    pins, extras, drop = {}, [], []
-    for it in d.get("pins") or []:
-        t = str(it.get("type", ""))
-        if t not in ZONE_META:
-            continue
-        try:
-            x0, x1 = sorted(float(v) for v in it.get("x", [0, 1])[:2])
-            y0, y1 = sorted(float(v) for v in it.get("y", [0, 1])[:2])
-        except Exception:
-            continue
-        x0, x1, y0, y1 = (min(1.0, max(0.0, v)) for v in (x0, x1, y0, y1))
-        if x1 - x0 < 0.15:
-            x0, x1 = max(0.0, min(x0, 0.85)), max(0.0, min(x0, 0.85)) + 0.15
-        if y1 - y0 < 0.15:
-            y0, y1 = max(0.0, min(y0, 0.85)), max(0.0, min(y0, 0.85)) + 0.15
-        pins[t] = (x0, x1, y0, y1)
-    for it in (d.get("add") or [])[:5]:
-        name = str(it.get("name", "")).strip()[:12]
-        if not name:
-            continue
-        cat = it.get("cat", "기타")
-        cat = cat if cat in CUSTOM_CATS else "기타"
-        try:
-            cnt = max(1, min(6, int(it.get("count", 1))))
-        except Exception:
-            cnt = 1
-        extras.append(dict(name=name, cat=cat, w=10 if cat == "푸드" else 9, h=6, count=cnt))
-    for t in d.get("remove_pins") or []:
-        if t in ZONE_META:
-            drop.append(t)
-    return dict(reply=str(d.get("reply", "")).strip(), pins=pins, extras=extras, drop=drop,
-                redesign=bool(d.get("redesign")) and bool(pins or extras or drop))
-
-
-def ask_ai(text: str, R: dict, P: dict, custom: list, pins: dict, history: list) -> dict:
-    msgs = [dict(role="system", content=_LLM_SYSTEM + "\n\n[현재 상태]\n" + _llm_context(R, P, custom, pins))]
-    for who, m_ in history[-6:]:
-        msgs.append(dict(role="assistant" if who == "ai" else "user", content=m_))
-    msgs.append(dict(role="user", content=text))
-    return plan_from_json(_llm_call(msgs))
-
 
 
 def parse_command(text: str) -> dict:
@@ -1132,10 +908,6 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
 .c3{cursor:grab;background:#dbe8f5}
 .legend{position:absolute;left:8px;bottom:8px;background:rgba(255,255,255,.93);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;display:grid;grid-template-columns:repeat(3,auto);gap:3px 12px;z-index:5;pointer-events:none}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
-.zinfo{position:absolute;left:10px;top:10px;width:min(330px,62%);max-height:calc(100% - 20px);overflow:auto;background:rgba(255,255,255,.97);border:1px solid #cbd5e1;border-left:6px solid var(--c,#2563eb);border-radius:10px;padding:10px 12px;z-index:8;font-size:12px;line-height:1.55;box-shadow:0 6px 18px rgba(15,23,42,.25)}
-.zinfo h5{font-size:14px;margin-bottom:4px;padding-right:20px}.zinfo ul{margin:4px 0 0 16px}.zinfo li{margin-bottom:3px}
-.zinfo .x{position:absolute;right:6px;top:4px;border:0;background:none;font-size:16px;padding:2px 6px;color:#64748b}
-.zinfo .sub{color:#64748b;font-weight:700;font-size:11px}
 .hint{position:absolute;right:8px;top:8px;background:rgba(15,23,42,.65);color:#fff;font-size:10.5px;padding:4px 9px;border-radius:8px;z-index:5;pointer-events:none}
 .tl{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:6px 10px;margin-bottom:8px;font-size:12px;font-weight:700;flex-wrap:wrap}
 .tl input{flex:1;min-width:120px;accent-color:#2563eb}
@@ -1154,13 +926,13 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
   <button id="bModeB" onclick="setMode('before')">설계 전(기존) 배치</button>
   <span style="width:10px"></span>
   <button id="b3d" class="on" onclick="setView(true)">🧊 3D 입체 설계도</button>
-  <button id="bEdit" class="on" onclick="toggleEdit()">🛠️ 편집 모드</button>
   <button id="b2d" onclick="setView(false)">🗺️ 2D 평면도</button>
+  <button id="bHeat3" onclick="togHeat3()">🔥 히트맵 겹치기</button>
   <button id="bDome" class="on" onclick="togDome()" style="display:none">🏛️ 지붕 표시</button>
   <span style="flex:1"></span>
   <button id="bPlay" onclick="togSim()">⏸ 시뮬레이션 정지</button>
-  <button id="bPpl" class="on" onclick="togPpl()">🚶 사람 표시(ON)</button>
   <button id="bRain" class="warn" onclick="togRain()">🌧️ 우천</button>
+  <button id="bEmg" class="danger" onclick="togEmg()">🚨 응급환자 발생</button>
 </div>
 <div class="tl">⏰ 시간대
   <button id="bTl" onclick="togTl()">▶ 재생</button>
@@ -1170,11 +942,10 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
 <div class="card"><h4><span>🗺️ 행사장 디지털 트윈 <span id="verTxt" style="color:#64748b;font-weight:600"></span></span>
   <span><span class="badge" id="peopleTxt"></span> <span class="badge" id="status">실시간 군중 시뮬레이션</span></span></h4>
   <div class="wrap" id="wrap">
-    <canvas id="cv" style="display:none"></canvas><canvas id="pp" style="display:none;pointer-events:none"></canvas>
+    <canvas id="cv" style="display:none"></canvas><canvas id="hm" style="display:none;opacity:.75;pointer-events:none"></canvas><canvas id="pp" style="display:none;pointer-events:none"></canvas>
     <div class="c3" id="c3"></div>
     <div class="legend" id="legend"></div>
-    <div class="zinfo" id="zinfo" style="display:none"></div>
-    <div class="hint" id="hint">드래그: 회전 · 휠: 확대/축소 · 부스를 누르면 이름과 근거가 나와요</div>
+    <div class="hint" id="hint">드래그: 회전 · 휠: 확대/축소</div>
   </div>
 </div>
 <div class="grid2">
@@ -1195,10 +966,10 @@ button.danger.on{background:#ef4444;border-color:#dc2626}
 <script>
 const D = __DATA__;
 const WW=160, WH=100, GX=40, GY=25;
-let showPeople=true; let selZ=-1; let mode='after', sim=true, rain=false, tHour=14, tlTimer=null, is3d=true, isEdit=false, dragging=false, dragStart={'x':0,'y':0};
+let mode='after', sim=true, rain=false, emg=null, tHour=14, tlTimer=null, is3d=true, heat3=false;
 const $=id=>document.getElementById(id);
-const cv=$('cv'), pp=$('pp'), hm2=$('hm2');
-const cx=cv.getContext('2d'), px=pp.getContext('2d'), h2=hm2.getContext('2d');
+const cv=$('cv'), hm=$('hm'), pp=$('pp'), hm2=$('hm2');
+const cx=cv.getContext('2d'), hx=hm.getContext('2d'), px=pp.getContext('2d'), h2=hm2.getContext('2d');
 const wrap=$('wrap'), wrap2=$('wrap2');
 let W=0,H=0,S=1,W2=0,H2=0;
 const Z=()=> mode==='after'?D.zones:D.before_zones;
@@ -1219,7 +990,7 @@ $('legend').innerHTML=
 
 function resize(){
   W=wrap.clientWidth; H=wrap.clientHeight; S=W/WW;
-  [cv,pp].forEach(c=>{c.width=W;c.height=H});
+  [cv,hm,pp].forEach(c=>{c.width=W;c.height=H});
   W2=wrap2.clientWidth; H2=wrap2.clientHeight; hm2.width=W2; hm2.height=H2;
   drawBase(); if(R3){ size3(); }
 }
@@ -1249,11 +1020,18 @@ function step(dt){
     let dx=a.tx-a.x, dy=a.ty-a.y, d=Math.hypot(dx,dy);
     let sp=a.sp*(rain?1.6:1);
     if(rain&&!a.leaving){ const st=Z().find(z=>z.type==='stage'); if(st){a.tx=st.x+st.w/2; a.ty=st.y+st.h/2+st.h*.7; dx=a.tx-a.x; dy=a.ty-a.y; d=Math.hypot(dx,dy);} }
+    if(emg){ const ex=a.x-emg.x, ey=a.y-emg.y, ed=Math.hypot(ex,ey); if(ed<9&&ed>0){ a.x+=ex/ed*.5; a.y+=ey/ed*.5; } }
     if(d<1.2){ if(a.leaving){ spawn(a);} else { a.dwell=3+Math.random()*9; } }
     else { mv(a,a.x+dx/d*sp,a.y+dy/d*sp); }
   });
   for(let i=0;i<agents.length;i+=2){ const a=agents[i]; if(!a.active) continue; const b=agents[(i*7+3)%agents.length]; if(!b.active) continue;
     const dx=a.x-b.x, dy=a.y-b.y, d=Math.hypot(dx,dy); if(d>0&&d<1.2){ a.x+=dx/d*.1; a.y+=dy/d*.1; } }
+  if(emg){ const meds=Z().filter(z=>z.type==='medical'); let best=null,bd=1e9;
+    meds.forEach(m=>{const d=Math.hypot(m.x+m.w/2-emg.x,m.y+m.h/2-emg.y); if(d<bd){bd=d;best=m;}});
+    emg.target=best;
+    if(best&&bd>1.5){ emg.x+=(best.x+best.w/2-emg.x)/bd*.9; emg.y+=(best.y+best.h/2-emg.y)/bd*.9;
+      $('status').textContent='🚑 응급 이송 중… 의료센터까지 '+(bd*mpu).toFixed(0)+'m';
+    } else if(best){ $('status').textContent='✅ 의료센터 도착 · 이송 소요 '+Math.round((performance.now()-emg.t0)/1000)+'초(시뮬레이션)'; } }
   raindrops.forEach(r=>{r.y+=r.v;r.x-=1;if(r.y>H){r.y=0;r.x=Math.random()*W}});
 }
 function updateHeat(){
@@ -1297,51 +1075,22 @@ function drawBase(){
     cx.textAlign='center'; cx.fillStyle='#fff';
     cx.font=Math.max(14,Math.min(26,h*.4))+'px sans-serif'; cx.fillText(z.icon,x+w/2,y+h/2-2);
     cx.font='bold '+Math.max(11,Math.min(15,w/6.5))+'px Pretendard,sans-serif'; cx.shadowColor='rgba(0,0,0,.6)'; cx.shadowBlur=3;
-    if(Z().indexOf(z)===selZ){ cx.fillText(z.name,x+w/2,y+h/2+Math.max(14,Math.min(20,h*.28)),w-6); } cx.shadowBlur=0;
-    if(Z().indexOf(z)===selZ){ cx.strokeStyle='#fde047'; cx.lineWidth=4; cx.beginPath(); cx.roundRect(x-2,y-2,w+4,h+4,8); cx.stroke(); } });
+    cx.fillText(z.name,x+w/2,y+h/2+Math.max(14,Math.min(20,h*.28)),w-6); cx.shadowBlur=0; });
   D.gates.forEach(g=>{ cx.fillStyle='#1e293b'; cx.beginPath(); cx.arc(g.x*S,g.y*S,10,0,7); cx.fill(); cx.strokeStyle='#fff'; cx.lineWidth=2; cx.stroke();
     cx.fillStyle='#fff'; cx.font='12px sans-serif'; cx.textAlign='center'; cx.fillText('🚪',g.x*S,g.y*S+4);
     const up=g.y>SHC[1]; cx.font='bold 11px Pretendard'; cx.fillStyle='#fff'; cx.shadowColor='#000'; cx.shadowBlur=3; cx.fillText(g.name,g.x*S,g.y*S+(up?-15:24)); cx.shadowBlur=0; });
 }
-function esc(t){ return String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function applyLab(){ if(G3) G3.traverse(o=>{ if(o.userData&&o.userData.lab!==undefined) o.visible=(o.userData.lab===selZ); }); if(!is3d) drawBase(); }
-function showInfo(i){ const z=Z()[i]; if(!z) return; selZ=i; applyLab(); const el=$('zinfo'); el.style.setProperty('--c',z.color);
-  const why=(z.why&&z.why.length)?z.why:['이 구역에 대한 근거가 없다.'];
-  el.innerHTML='<button class="x" onclick="closeInfo()">✕</button><h5>'+z.icon+' '+esc(z.name)+'</h5><div class="sub">'+(mode==='after'?'왜 여기가 최적일까?':'설계 전(기존) 배치')+'</div><ul>'+why.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul
-<div class='edit-ui' style='margin-top:10px; padding-top:10px; border-top:1px solid #eee; display:flex; flex-direction:column; gap:4px;'>
-  <button onclick='handleEdit(selZ, "del")' style='background:#fee2e2; color:#dc2626; border:1px solid #fecaca; font-size:11px;'>🗑️ 삭제</button>
-  <div style='display:grid; grid-template-columns:1fr 1fr; gap:2px;'>
-    <button onclick='handleEdit(selZ, "w", document.getElementById("szW").value)' style='font-size:10px;'>↔️ 가로</button>
-    <button onclick='handleEdit(selZ, "h", document.getElementById("szH").value)' style='font-size:10px;'>↕️ 세로</button>
-  </div>
-  <div style='display:flex; gap:2px;'>
-    <input id='szW' type='number' style='width:45%; font-size:10px; border:1px solid #cbd5e1;' placeholder='W'>
-    <input id='szH' type='number' style='width:45%; font-size:10px; border:1px solid #cbd5e1;' placeholder='H'>
-  </div>
-</div>'+((z.about&&z.about.length)?'<div class="sub" style="margin-top:8px">📋 이 부스는 어떤 곳일까?</div><ul>'+z.about.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>':'');
-  el.style.display='block'; }
-function closeInfo(){ $('zinfo').style.display='none'; selZ=-1; applyLab(); }
-function closeInfo(){ $('zinfo').style.display='none'; selZ=-1; applyEdit(); }
-function toggleEdit(){ isEdit=!isEdit; $('bEdit').className=isEdit?'on':''; applyEdit(); }
-function handleEdit(i, action, val){
-    if(i<0) return;
-    const Zs=Z(); const z=Zs[i];
-    if(action==='del'){ z.deleted=true; }
-    else if(action==='w'){ z.w=Math.max(3,parseFloat(val)); }
-    else if(action==='h'){ z.h=Math.max(3,parseFloat(val)); }
-    if(is3d) buildScene3(); else drawBase();
-    const payload = {seq:Date.now(), manual_layout: JSON.stringify(Zs.filter(z=>!z.deleted))};
-    window.parent.postMessage({type:'streamlit:setComponentValue', value: payload}, '*');
-}
-function applyEdit(){ if(is3d) buildScene3(); else drawBase(); }
-function pickZone2D(mx,my){ const Zs=Z(); for(let i=Zs.length-1;i>=0;i--){ const z=Zs[i]; if(mx>=z.x&&mx<=z.x+z.w&&my>=z.y&&my<=z.y+z.h) return i; } return -1; }
 function nearestGate(z){ let b=D.gates[0],bd=1e9; D.gates.forEach(g=>{const d=Math.hypot(g.x-(z.x+z.w/2),g.y-(z.y+z.h/2)); if(d<bd){bd=d;b=g;}}); return b; }
 function drawPeople(){ px.clearRect(0,0,W,H);
-  agents.forEach(a=>{ if(!a.active||!showPeople) return; px.fillStyle=rain?'#93c5fd':'#fff'; px.strokeStyle='rgba(0,0,0,.4)'; px.lineWidth=.8; px.beginPath(); px.arc(a.x*S,a.y*S,3.2,0,7); px.fill(); px.stroke(); });
+  agents.forEach(a=>{ if(!a.active) return; px.fillStyle=rain?'#93c5fd':'#fff'; px.strokeStyle='rgba(0,0,0,.4)'; px.lineWidth=.8; px.beginPath(); px.arc(a.x*S,a.y*S,3.2,0,7); px.fill(); px.stroke(); });
+  if(emg){ px.strokeStyle='#ef4444'; px.lineWidth=3; px.setLineDash([6,5]);
+    if(emg.target){ px.beginPath(); px.moveTo(emg.x*S,emg.y*S); px.lineTo((emg.target.x+emg.target.w/2)*S,(emg.target.y+emg.target.h/2)*S); px.stroke(); }
+    px.setLineDash([]); px.fillStyle='#ef4444'; px.beginPath(); px.arc(emg.x*S,emg.y*S,9+Math.sin(performance.now()/120)*2,0,7); px.fill();
+    px.fillStyle='#fff'; px.font='bold 12px Pretendard'; px.textAlign='center'; px.fillText('🚑 응급',emg.x*S,emg.y*S-14); }
   if(rain){ px.strokeStyle='rgba(147,197,253,.55)'; px.lineWidth=1.1; raindrops.forEach(r=>{px.beginPath();px.moveTo(r.x,r.y);px.lineTo(r.x-2,r.y+r.l);px.stroke();}); }
 }
 /* ---------- 3D 아이소메트릭 ---------- */
-let R3=null,S3,C3,G3,bodyM,headM,rainPts;
+let R3=null,S3,C3,G3,bodyM,headM,rainPts,emgGrp,emgLine,heatPlane,heatTex;
 let yaw=.55,pitch=.72,zoom3=1.45*Math.min(1.45,WW/Math.max(D.shape.bbox[2]-D.shape.bbox[0],(D.shape.bbox[3]-D.shape.bbox[1])*1.3))*(D.shape.dome?.82:1),drag=false,lx=0,ly=0;
 const DUM=new THREE.Object3D();
 function M(c,o){return new THREE.MeshLambertMaterial(Object.assign({color:new THREE.Color(c)},o||{}));}
@@ -1360,7 +1109,7 @@ function labelSprite(text,color){
   const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true})); sp.renderOrder=10; return sp;
 }
 function buildZone3(z){
-  const g=new THREE.Group(); g.userData.zi=Z().indexOf(z); const cxz=z.x+z.w/2-WW/2, czz=z.y+z.h/2-WH/2; g.position.set(cxz,0,czz); G3.add(g);
+  const g=new THREE.Group(); const cxz=z.x+z.w/2-WW/2, czz=z.y+z.h/2-WH/2; g.position.set(cxz,0,czz); G3.add(g);
   const w=z.w,h=z.h; const pale=new THREE.Color(z.color).lerp(new THREE.Color('#ffffff'),.65).getStyle();
   bx(g,w,.5,h,pale,0,.25,0);
   let top=8;
@@ -1393,7 +1142,7 @@ function buildZone3(z){
       const roof=new THREE.Mesh(new THREE.ConeGeometry(1,3.4,4),M(z.color)); roof.rotation.y=Math.PI/4; roof.scale.set(w*.72,1,h*.72); roof.position.set(0,6.7,0); g.add(roof);
       bx(g,w*.5,1.6,h*.22,'#f8fafc',0,1.4,h*.15); [-1,0,1].forEach(k=>bx(g,1.4,1,1.4,z.color,k*w*.16,2.7,h*.15)); top=9.5; }
   }
-  const sp=labelSprite(z.icon+' '+z.name,z.color); const ww=Math.min(30,Math.max(14,z.name.length*2.1+8)); sp.scale.set(ww,ww*150/640,1); sp.position.set(0,top+3,0); sp.userData.lab=Z().indexOf(z); sp.visible=(selZ===sp.userData.lab); sp.raycast=function(){}; g.add(sp);
+  const sp=labelSprite(z.icon+' '+z.name,z.color); const ww=Math.min(30,Math.max(14,z.name.length*2.1+8)); sp.scale.set(ww,ww*150/640,1); sp.position.set(0,top+3,0); g.add(sp);
 }
 function shapeGeo(scale){ const sh=new THREE.Shape(); D.shape.outline.forEach((p,i)=>{ const x=(p[0]-WW/2)*scale, y=-(p[1]-WH/2)*scale; if(i) sh.lineTo(x,y); else sh.moveTo(x,y); }); sh.closePath(); return sh; }
 function slab(depth,color,y,scale){ const m=new THREE.Mesh(new THREE.ExtrudeGeometry(shapeGeo(scale),{depth:depth,bevelEnabled:false}),M(color)); m.rotation.x=-Math.PI/2; m.position.y=y; G3.add(m); return m; }
@@ -1418,7 +1167,7 @@ function buildScene3(){
     dm.scale.set(bw/2,bw/2*.6,bh/2); dm.renderOrder=1; G3.add(dm);
     const wf=new THREE.Mesh(new THREE.SphereGeometry(1,16,6,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x475569,wireframe:true,transparent:true,opacity:.16,depthWrite:false}));
     wf.scale.copy(dm.scale); wf.renderOrder=1; G3.add(wf); domeMeshes=[dm,wf]; domeMeshes.forEach(m=>m.visible=domeOn); }
-  $('zlist').innerHTML=Z().map((z,i)=>`<span data-i="${i}" style="--c:${z.color};cursor:pointer">${z.icon} ${esc(z.name)}</span>`).join(''); $('zCnt').textContent='('+Z().length+'개)';
+  $('zlist').innerHTML=Z().map(z=>`<span style="--c:${z.color}">${z.icon} ${z.name}</span>`).join(''); $('zCnt').textContent='('+Z().length+'개)';
 }
 function initR3(){
   const el=$('c3'); try{ R3=new THREE.WebGLRenderer({antialias:true}); }catch(e){ R3=null; is3d=false; $('hint').textContent='이 브라우저는 3D를 지원하지 않아 2D로 표시합니다'; return; }
@@ -1429,12 +1178,11 @@ function initR3(){
   bodyM.frustumCulled=false; headM.frustumCulled=false; S3.add(bodyM); S3.add(headM);
   const rp=new Float32Array(500*3); for(let i=0;i<500;i++){rp[i*3]=(Math.random()-.5)*WW;rp[i*3+1]=Math.random()*60;rp[i*3+2]=(Math.random()-.5)*WH;}
   rainPts=new THREE.Points(new THREE.BufferGeometry().setAttribute('position',new THREE.BufferAttribute(rp,3)),new THREE.PointsMaterial({color:0x60a5fa,size:1.2})); rainPts.visible=false; rainPts.frustumCulled=false; S3.add(rainPts);
+  emgGrp=new THREE.Mesh(new THREE.SphereGeometry(1.8,16,12),new THREE.MeshBasicMaterial({color:0xef4444})); emgGrp.visible=false; S3.add(emgGrp);
+  emgLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:0xef4444})); emgLine.visible=false; emgLine.frustumCulled=false; S3.add(emgLine);
+  heatTex=new THREE.CanvasTexture(hm); heatPlane=new THREE.Mesh(new THREE.PlaneGeometry(WW,WH),new THREE.MeshBasicMaterial({map:heatTex,transparent:true,opacity:.8,depthWrite:false})); heatPlane.rotation.x=-Math.PI/2; heatPlane.position.y=.5; heatPlane.visible=false; S3.add(heatPlane);
   const e=R3.domElement;
-  let dx0=0,dy0=0; const RC=new THREE.Raycaster();
-  e.addEventListener('mousedown',ev=>{dx0=ev.clientX;dy0=ev.clientY;});
-  e.addEventListener('mouseup',ev=>{ if(Math.hypot(ev.clientX-dx0,ev.clientY-dy0)>4) return; const r=e.getBoundingClientRect(); RC.setFromCamera(new THREE.Vector2((ev.clientX-r.left)/r.width*2-1,-((ev.clientY-r.top)/r.height)*2+1),C3);
-    const hits=RC.intersectObjects(G3.children,true); for(const h of hits){ let o=h.object; while(o&&o.userData.zi===undefined) o=o.parent; if(o&&o.userData.zi>=0){ showInfo(o.userData.zi); return; } } closeInfo(); });
-  e.onmousedown=ev=>{ if(isEdit) return; drag=true;lx=ev.clientX;ly=ev.clientY; }; window.addEventListener('mouseup',()=>drag=false);
+  e.onmousedown=ev=>{drag=true;lx=ev.clientX;ly=ev.clientY;}; window.addEventListener('mouseup',()=>drag=false);
   e.onmousemove=ev=>{ if(!drag)return; yaw-=(ev.clientX-lx)*.008; pitch=Math.min(1.35,Math.max(.3,pitch+(ev.clientY-ly)*.006)); lx=ev.clientX; ly=ev.clientY; };
   e.addEventListener('wheel',ev=>{ev.preventDefault(); zoom3=Math.min(3.2,Math.max(.6,zoom3*(ev.deltaY<0?1.1:.9)));},{passive:false});
   e.addEventListener('touchstart',ev=>{drag=true;lx=ev.touches[0].clientX;ly=ev.touches[0].clientY;},{passive:true});
@@ -1446,54 +1194,44 @@ function size3(){ if(!R3) return; const el=$('c3'); const w=el.clientWidth,h=el.
 function render3(){
   if(!R3) return; const Rr=400;
   C3.position.set(Math.sin(yaw)*Math.cos(pitch)*Rr,Math.sin(pitch)*Rr,Math.cos(yaw)*Math.cos(pitch)*Rr); C3.lookAt(0,0,0); C3.zoom=zoom3; C3.updateProjectionMatrix();
-  for(let i=0;i<agents.length;i++){ const a=agents[i]; const s=(a.active&&showPeople)?1:0.0001; DUM.rotation.set(0,0,0); DUM.scale.set(s,s,s);
+  for(let i=0;i<agents.length;i++){ const a=agents[i]; const s=a.active?1:0.0001; DUM.rotation.set(0,0,0); DUM.scale.set(s,s,s);
     DUM.position.set(a.x-WW/2,1.7,a.y-WH/2); DUM.updateMatrix(); bodyM.setMatrixAt(i,DUM.matrix); DUM.position.y=3.6; DUM.updateMatrix(); headM.setMatrixAt(i,DUM.matrix); }
   bodyM.instanceMatrix.needsUpdate=true; headM.instanceMatrix.needsUpdate=true; bodyM.material.color.set(rain?'#2563eb':'#f97316');
   rainPts.visible=rain; if(rain){ const p=rainPts.geometry.attributes.position; for(let i=0;i<500;i++){ let y=p.getY(i)-1.4; if(y<0) y=60; p.setY(i,y);} p.needsUpdate=true; }
+  if(emg){ emgGrp.visible=true; emgGrp.position.set(emg.x-WW/2,3,emg.y-WH/2); const sc=1+Math.sin(performance.now()/120)*.25; emgGrp.scale.set(sc,sc,sc);
+    if(emg.target){ emgLine.visible=true; const tp=emgLine.geometry.attributes.position; tp.setXYZ(0,emg.x-WW/2,3,emg.y-WH/2); tp.setXYZ(1,emg.target.x+emg.target.w/2-WW/2,3,emg.target.y+emg.target.h/2-WH/2); tp.needsUpdate=true; } }
+  else { emgGrp.visible=false; emgLine.visible=false; }
+  heatPlane.visible=heat3; if(heat3) heatTex.needsUpdate=true;
   R3.render(S3,C3);
 }
 /* ---------- 루프 & 컨트롤 ---------- */
 let last=performance.now(), kt=0;
 function loop(now){ const dt=(now-last)/1000; last=now;
   if(sim){ step(dt); }
-  updateHeat(); const r=drawHeat(h2,W2,H2,true);
+  updateHeat(); const r=drawHeat(hx,W,H,false); drawHeat(h2,W2,H2,true);
   if(is3d) render3(); else drawPeople();
   const n=Math.round(D.params.visitors*.5*factor(tHour)); $('peopleTxt').textContent='시뮬레이션 군중 ≈ '+n.toLocaleString()+'명';
   kt+=dt; if(kt>.4){ kt=0; $('kPeak').textContent=r[0].toFixed(2)+' 명/㎡'; $('kBott').textContent=(r[2]?Math.round(100*r[1]/r[2]):0)+'%';
     const de=mode==='after'?D.detail:D.before_detail; $('kMed').textContent=Math.round(de.t_max)+'초'; $('kRisk').textContent=de.risk_zones+'개소'; }
   requestAnimationFrame(loop);
 }
-function setView(v3){ if(v3&&!R3) return; is3d=v3; $('c3').style.display=v3?'block':'none'; [cv,pp].forEach(c=>c.style.display=v3?'none':'block');
-  $('b3d').className=v3?'on':''; $('b2d').className=v3?'':'on'; $('hint').style.display=v3?'block':'none'; $('bDome').style.display=(v3&&D.shape.dome)?'inline-block':'none';
+function setView(v3){ if(v3&&!R3) return; is3d=v3; $('c3').style.display=v3?'block':'none'; [cv,hm,pp].forEach(c=>c.style.display=v3?'none':'block');
+  hm.style.display=(!v3&&heat3)?'block':'none'; $('b3d').className=v3?'on':''; $('b2d').className=v3?'':'on'; $('hint').style.display=v3?'block':'none'; $('bDome').style.display=(v3&&D.shape.dome)?'inline-block':'none';
   if(v3) size3(); }
 function togDome(){ domeOn=!domeOn; domeMeshes.forEach(m=>m.visible=domeOn); $('bDome').className=domeOn?'on':''; $('bDome').textContent=domeOn?'🏛️ 지붕 표시':'🏛️ 지붕 숨김'; }
+function togHeat3(){ heat3=!heat3; $('bHeat3').className=heat3?'on':''; if(!is3d) hm.style.display=heat3?'block':'none'; }
 function setMode(m){ mode=m; $('bMode').className=m==='after'?'on':''; $('bModeB').className=m==='before'?'on':'';
   $('verTxt').textContent=m==='after'?'· AI 최적 배치(종합 '+D.total.toFixed(1)+'점)':'· 설계 전(종합 '+D.before_total.toFixed(1)+'점)';
-  heat.fill(0); initAgents(); selZ=-1; $('zinfo').style.display='none'; drawBase(); if(R3) buildScene3(); $('status').textContent='실시간 군중 시뮬레이션'; }
-function togPpl(){ showPeople=!showPeople; const b=$('bPpl'); b.className=showPeople?'on':''; b.textContent=showPeople?'🚶 사람 표시(ON)':'🚶 사람 표시(OFF)'; }
+  heat.fill(0); initAgents(); emg=null; $('bEmg').className='danger'; $('bEmg').textContent='🚨 응급환자 발생'; drawBase(); if(R3) buildScene3(); $('status').textContent='실시간 군중 시뮬레이션'; }
 function togSim(){ sim=!sim; $('bPlay').textContent=sim?'⏸ 시뮬레이션 정지':'▶ 시뮬레이션 시작'; }
 function togRain(){ rain=!rain; const b=$('bRain'); b.className='warn'+(rain?' on':''); b.textContent=rain?'🌧️ 우천(ON)':'🌧️ 우천'; $('envTxt').textContent=rain?'🌧️ 우천: 무대 쪽으로 대피':'일반 상태';
   agents.forEach(a=>{ if(!rain&&!a.leaving) setTarget(a); }); drawBase(); if(R3) buildScene3(); }
+function togEmg(){ const b=$('bEmg');
+  if(emg){ emg=null; b.className='danger'; b.textContent='🚨 응급환자 발생'; $('status').textContent='실시간 군중 시뮬레이션'; return; }
+  const Zs=Z().filter(z=>z.type!=='medical'); const z=Zs[Math.floor(Math.random()*Zs.length)];
+  emg={x:z.x+z.w/2,y:z.y+z.h+2,trail:[],t0:performance.now(),target:null}; b.className='danger on'; b.textContent='🚨 응급 해제'; sim=true; $('bPlay').textContent='⏸ 시뮬레이션 정지'; }
 function setTime(h){ tHour=h; $('tSl').value=h; $('tTxt').textContent=h+':00'; $('tDesc').textContent=descT(h); }
 function togTl(){ const b=$('bTl'); if(tlTimer){clearInterval(tlTimer);tlTimer=null;b.textContent='▶ 재생';} else { b.textContent='⏸ 일시정지'; tlTimer=setInterval(()=>{ let n=tHour+1; if(n>20)n=10; setTime(n); },2500); } }
-cv.addEventListener('mousedown', ev => {
-        const r=cv.getBoundingClientRect(); const i=pickZone2D((ev.clientX-r.left)/r.width*WW,(ev.clientY-r.top)/r.height*WH);
-        if(i>=0 && isEdit){ selZ=i; dragStart={x:ev.clientX, y:ev.clientY}; dragging=true; return; }
-        if(i>=0) showInfo(i); else closeInfo();
-    });
-    cv.addEventListener('mousemove', ev => {
-        if(isEdit && dragging){
-            const dx=(ev.clientX-dragStart.x)/S; const dy=(ev.clientY-dragStart.y)/S;
-            const z=Z()[selZ]; z.x += dx; z.y += dy; dragStart={x:ev.clientX, y:ev.clientY}; drawBase();
-        }
-    });
-    cv.addEventListener('mouseup', () => { dragging=false; });
-    cv.addEventListener('click',ev=>{
-        const r=cv.getBoundingClientRect(); const i=pickZone2D((ev.clientX-r.left)/r.width*WW,(ev.clientY-r.top)/r.height*WH);
-        if(i>=0 && isEdit) return;
-        if(i>=0) showInfo(i); else closeInfo();
-    });
-$('zlist').addEventListener('click',ev=>{ const t=ev.target.closest('span[data-i]'); if(t) showInfo(+t.dataset.i); });
 window.addEventListener('resize',resize);
 setTime(14); resize(); initR3(); setView(is3d&&!!R3); setMode('after'); resize(); requestAnimationFrame(loop);
 </script></body></html>
@@ -1813,38 +1551,6 @@ with st.sidebar:
     gates = st.selectbox("출입구 수", [2, 4, 6], index=1, format_func=lambda n: f"{n}개")
     n_cand = st.select_slider("탐색할 배치안 수", [500, 1000, 2000, 3000, 5000], value=2000)
 
-    st.markdown("### 🎪 부스 구성 (종류·개수)")
-    _tmp_p = dict(purpose=purpose, mood=mood, age=age, visitors=int(visitors), budget=int(budget), area_m2=int(area))
-    _rec, _why = recommend_counts(_tmp_p)
-
-    def _fill_ai(_p=_tmp_p):
-        _c, _r, _src = ai_recommend_counts(_p)
-        for _k, _v in _c.items():
-            st.session_state[f"cnt_{_k}"] = _v
-        st.session_state["count_reasons"] = (_r, _src)
-
-    count_mode = st.radio("부스 개수를 정하는 방법", ["AI 추천으로 자동", "직접 정하기"], horizontal=True, key="count_mode",
-                          help="자동: 방문객·목적·분위기·연령대·예산을 보고 정한다. 직접: 아래 칸에 원하는 개수를 넣는다.")
-    if count_mode == "직접 정하기":
-        for _k, _lab, _lo, _hi in COUNT_TYPES:
-            if f"cnt_{_k}" not in st.session_state:
-                st.session_state[f"cnt_{_k}"] = _rec[_k]
-            st.number_input(_lab, _lo, _hi, step=1, key=f"cnt_{_k}")
-        st.button("🤖 AI에게 추천받아 채우기", on_click=_fill_ai, use_container_width=True)
-        counts = {_k: int(st.session_state[f"cnt_{_k}"]) for _k, *_ in COUNT_TYPES}
-        _cr = st.session_state.get("count_reasons")
-        if _cr:
-            with st.expander("추천 이유 보기" + (" (AI)" if _cr[1] == "ai" else " (규칙 계산)")):
-                for _k, _lab, *_ in COUNT_TYPES:
-                    st.markdown(f"- **{_lab}**: {_cr[0].get(_k, '')}")
-    else:
-        counts = None
-        st.caption("AI 추천: " + " · ".join(f"{_lab.split(' ')[1]} {_rec[_k]}개" for _k, _lab, *_ in COUNT_TYPES))
-        with st.expander("추천 이유 보기"):
-            for _k, _lab, *_ in COUNT_TYPES:
-                st.markdown(f"- **{_lab}**: {_why[_k]}")
-        st.caption("예산을 넘으면 체험부스·푸드존을 줄여서 맞춘다. 개수를 직접 정하면 줄이지 않는다.")
-
     with st.expander("📐 구역 크기 조절 (100% = 기본)"):
         st.caption("바꾼 뒤 상단의 '✦ AI 설계 생성 / 재배치'를 누르면 반영됩니다. 구역이 너무 커서 들어가지 않으면 자동으로 줄이고 알려드립니다.")
         size_scale = {}
@@ -1885,7 +1591,7 @@ with st.sidebar:
 def current_params():
     return dict(name=name, purpose=purpose, budget=int(budget), visitors=int(visitors), venue=venue,
                 location=location, area_m2=int(area), hours=hours, mood=mood, age=age, gates=int(gates),
-                shape=shape, size_scale=dict(size_scale), counts=(dict(counts) if counts else None))
+                shape=shape, size_scale=dict(size_scale))
 
 
 def make_sig():
@@ -1943,9 +1649,6 @@ if b1.button("✦ AI 설계 생성 / 재배치", type="primary", use_container_w
     ss.pending = "조건 입력 설계"
 if not ss.history and not ss.pending:
     ss.pending = "기본 설계"
-if ss.pending and 'MANUAL' in ss.pending:
-        ss.manual_layout = ss.pending.replace('MANUAL:', '')
-        ss.pending = None
 if ss.pending:
     _label, ss.pending = ss.pending, None
     run_design(_label)
@@ -1975,43 +1678,22 @@ with tab_main:
         m[4].metric("예상 비용", f"{R['cost']['total']:,.0f}만원", f"예산 {R['cost']['budget']:,}만원", delta_color="off")
 
         # ---- AI 어시스턴트
-        st.markdown("##### 🤖 AI 어시스턴트 — 말로 배치를 바꾸거나, 왜 이렇게 배치했는지 물어보세요")
-        st.caption("🟢 AI 연결됨 (자유롭게 말해도 됩니다)" if llm_ready() else
-                   "🟡 AI 키가 없어 기본 모드로 동작합니다. 정해진 형식('무대 우측', '포토존 2개 추가')만 이해해요. 설정 방법은 아래 안내 참고.")
-        box = st.container(height=220)
-        for who, msg in ss.chat[-8:]:
+        st.markdown("##### 🤖 AI 어시스턴트 — 말로 배치를 바꾸거나 부스를 추가하세요")
+        box = st.container(height=130)
+        for who, msg in ss.chat[-6:]:
             box.chat_message("assistant" if who == "ai" else "user").write(msg)
-        cmd = st.chat_input("예: 무대를 오른쪽으로 옮기고 먹거리는 입구 가까이에 둬줘 / 포토존 2개 추가 / 왜 무대가 여기야?")
+        cmd = st.chat_input("예: 무대를 우측으로 옮기고 응급의료센터를 중앙에 배치해줘 / 포토존 2개 추가")
         if cmd:
             ss.chat.append(("user", cmd))
-            plan = None
-            if llm_ready():
-                try:
-                    plan = ask_ai(cmd, R, P, ss.custom, ss.pins, ss.chat[:-1])
-                except Exception as e:  # noqa
-                    ss.chat.append(("ai", f"AI 연결에 실패해서 기본 모드로 해석합니다. ({type(e).__name__})"))
-            if plan is not None:
-                for t in plan["drop"]:
-                    ss.pins.pop(t, None)
-                ss.pins.update(plan["pins"])
-                ss.custom.extend(plan["extras"])
-                ss.chat.append(("ai", plan["reply"] or ("알겠어요." if plan["redesign"] else "답변을 만들지 못했어요. 다시 말해 주세요.")))
-                if plan["redesign"]:
-                    ss.pending = "AI 어시스턴트: " + cmd[:18]
+            parsed = parse_command(cmd)
+            if not parsed["pins"] and not parsed["extras"]:
+                ss.chat.append(("ai", "배치 지시를 이해하지 못했습니다. '무대 우측', '응급의료센터 중앙', '푸드트럭 3개 추가' 형태로 말씀해 주세요."))
             else:
-                parsed = parse_command(cmd)
-                if not parsed["pins"] and not parsed["extras"]:
-                    ss.chat.append(("ai", "배치 지시를 이해하지 못했습니다. '무대 우측', '응급의료센터 중앙', '푸드트럭 3개 추가' 형태로 말씀해 주세요."))
-                else:
-                    ss.pins.update(parsed["pins"])
-                    ss.custom.extend(parsed["extras"])
-                    ss.chat.append(("ai", " ".join(parsed["msgs"]) + " 반영하여 다시 최적화합니다."))
-                    ss.pending = "AI 어시스턴트: " + cmd[:18]
+                ss.pins.update(parsed["pins"])
+                ss.custom.extend(parsed["extras"])
+                ss.chat.append(("ai", " ".join(parsed["msgs"]) + " 반영하여 다시 최적화합니다."))
+                ss.pending = "AI 어시스턴트: " + cmd[:18]
             st.rerun()
-        with st.expander("AI 연결 방법 (선생님·팀원용)"):
-            st.markdown("Streamlit 의 `Settings → Secrets` (로컬은 `.streamlit/secrets.toml`)에 아래를 넣으면 된다.\n"
-                        "```toml\nLLM_API_KEY = \"여기에 키\"\n# 선택: LLM_BASE_URL = \"https://api.openai.com/v1\"\n# 선택: LLM_MODEL = \"gpt-4o-mini\"\n```\n"
-                        "OpenAI 호환 주소면 다른 서비스도 쓸 수 있다. 키는 코드에 직접 쓰지 말고 Secrets 에만 넣는다.")
 
         # ---- 디지털 트윈
         components.html(build_twin_html(R), height=1330, scrolling=True)
