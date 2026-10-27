@@ -1314,6 +1314,21 @@ def save_edit(result,zones,label):
     ss['_next_hist']=ss.view
 
 
+
+# Self-contained component assets: app.py can be deployed without a separate folder.
+import tempfile
+
+_EDITOR_BOOTSTRAP_HTML = '<!doctype html><html><meta charset="utf-8"><style>body{margin:0}iframe{border:0;width:100%;height:1600px}</style><iframe id="scene" title="Event ON 3D 편집"></iframe><script>\nconst f=document.getElementById(\'scene\');let rev=null;\nconst send=(type,extra={})=>parent.postMessage({isStreamlitMessage:true,type,...extra},\'*\');\nwindow.addEventListener(\'message\',e=>{if(e.source===parent&&e.data.type===\'streamlit:render\'){const a=e.data.args;if(a.revision!==rev){rev=a.revision;f.srcdoc=a.html}send(\'streamlit:setFrameHeight\',{height:1600});}\nelse if(e.source===f.contentWindow&&e.data.type===\'event:save\'){send(\'streamlit:setComponentValue\',{dataType:\'json\',value:{zones:e.data.zones,revision:rev,token:Date.now()+\'-\'+Math.random()}})}});send(\'streamlit:componentReady\',{apiVersion:1});\n</script></html>'
+
+@st.cache_resource(show_spinner=False)
+def get_3d_editor_component():
+    # Use an absolute temporary asset directory, independent of repository layout
+    # and repository write permissions. The cached component keeps it alive.
+    folder = pathlib.Path(tempfile.mkdtemp(prefix='event_on_editor_'))
+    (folder / 'index.html').write_text(_EDITOR_BOOTSTRAP_HTML, encoding='utf-8')
+    return components.declare_component('event_on_3d_editor', path=str(folder.resolve()))
+
+
 def render_ai_editor(R):
     st.caption('API 키는 비밀번호 칸 또는 배포 환경의 EVENT_AI_API_KEY로 설정합니다. 요청 시 행사 설정과 시설 목록이 입력한 API로 전송됩니다.')
     with st.expander('AI API 연결 설정',expanded=False):
@@ -1365,7 +1380,7 @@ def render_ai_editor(R):
             except ValueError as e: st.error(str(e))
     st.markdown('##### 🧊 3D 화면에서 직접 편집')
     st.caption('편집 모드 → 부스 클릭 → 몸체 드래그로 이동, 노란 손잡이로 크기 조절. 빈 바닥 드래그는 시점 회전입니다. 저장해야 점수·리포트에 반영됩니다.')
-    component=components.declare_component('event_on_3d_editor',path=str(pathlib.Path(__file__).parent/'event_editor'))
+    component=get_3d_editor_component()
     value=component(html=build_twin_html(R),revision=ss.view,key='eo_3d_canvas')
     if isinstance(value,dict) and value.get('token')!=ss.get('_last_edit_token'):
         ss['_last_edit_token']=value.get('token')
