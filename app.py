@@ -684,7 +684,7 @@ def optimize(params: dict, custom: List[dict], pins: Dict[str, tuple], n_candida
         if i % 100 == 0:
             prog(0.68 + 0.2 * i / max(1, n_mut), f"상위 배치안 변이·재평가 {i:,}/{n_mut:,}")
 
-    prog(0.9, "다목적 최적화(파레토) 및 최적안 선정 중…")
+    prog(0.9, "다목적 최적화(파레토) 및 배치안 평가 중…")
     S = np.array(scs)
     total = S @ wvec
     best = int(np.argmax(total))
@@ -884,358 +884,7 @@ def parse_command(text: str) -> dict:
 
 # ===== TWIN =====
 
-TWIN_TEMPLATE = r"""
-<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Pretendard,-apple-system,system-ui,sans-serif;background:transparent;color:#0f172a}
-.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
-button{cursor:pointer;border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;padding:6px 11px;border-radius:8px;font-size:12px;font-weight:700;font-family:inherit}
-button:hover{background:#e2e8f0}
-button.on{background:#2563eb;color:#fff;border-color:#1d4ed8}
-button.warn.on{background:#f59e0b;border-color:#d97706}
-button.danger.on{background:#ef4444;border-color:#dc2626}
-.badge{font-size:11px;font-weight:700;color:#2563eb;background:#eff6ff;padding:3px 9px;border-radius:12px}
-.card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px}
-.card h4{font-size:13px;font-weight:800;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.wrap{position:relative;width:100%;background:#1e293b;border-radius:10px;overflow:hidden}
-#wrap{aspect-ratio:1.85}
-#wrap2{aspect-ratio:1.6}
-.wrap canvas,.wrap .c3{position:absolute;inset:0;width:100%;height:100%}
-.c3{cursor:grab;background:#dbe8f5}
-.legend{position:absolute;left:8px;bottom:8px;background:rgba(255,255,255,.93);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;display:grid;grid-template-columns:repeat(3,auto);gap:3px 12px;z-index:5;pointer-events:none}
-.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
-.hint{position:absolute;right:8px;top:8px;background:rgba(15,23,42,.65);color:#fff;font-size:10.5px;padding:4px 9px;border-radius:8px;z-index:5;pointer-events:none}
-.tl{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:6px 10px;margin-bottom:8px;font-size:12px;font-weight:700;flex-wrap:wrap}
-.tl input{flex:1;min-width:120px;accent-color:#2563eb}
-.tm{background:#2563eb;color:#fff;border-radius:16px;padding:2px 10px;font-size:12px;min-width:56px;text-align:center}
-.grid2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;margin-top:12px}
-@media(max-width:900px){.grid2{grid-template-columns:1fr}}
-.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px}
-.kpi div{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:11px;color:#64748b;font-weight:700}
-.kpi b{display:block;font-size:17px;color:#0f172a}
-.hl{font-size:11px;color:#64748b;font-weight:700;display:flex;justify-content:space-around;margin-top:6px}
-.zl{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:5px;font-size:11px;font-weight:700;max-height:190px;overflow:auto}
-.zl span{background:#f8fafc;border:1px solid #e2e8f0;border-left:5px solid var(--c);border-radius:6px;padding:4px 7px}
-</style></head><body>
-<div class="bar">
-  <button id="bMode" class="on" onclick="setMode('after')">✦ AI 최적 배치</button>
-  <button id="bModeB" onclick="setMode('before')">설계 전(기존) 배치</button>
-  <span style="width:10px"></span>
-  <button id="b3d" class="on" onclick="setView(true)">🧊 3D 입체 설계도</button>
-  <button id="b2d" onclick="setView(false)">🗺️ 2D 평면도</button>
-  <button id="bHeat3" onclick="togHeat3()">🔥 히트맵 겹치기</button>
-  <button id="bDome" class="on" onclick="togDome()" style="display:none">🏛️ 지붕 표시</button>
-  <span style="flex:1"></span>
-  <button id="bPlay" onclick="togSim()">⏸ 시뮬레이션 정지</button>
-  <button id="bRain" class="warn" onclick="togRain()">🌧️ 우천</button>
-  <button id="bEmg" class="danger" onclick="togEmg()">🚨 응급환자 발생</button>
-</div>
-<div class="tl">⏰ 시간대
-  <button id="bTl" onclick="togTl()">▶ 재생</button>
-  <input type="range" id="tSl" min="10" max="20" step="1" value="14" oninput="setTime(+this.value)">
-  <span class="tm" id="tTxt">14:00</span><span id="tDesc" style="color:#64748b;font-weight:600"></span>
-</div>
-<div class="card"><h4><span>🗺️ 행사장 디지털 트윈 <span id="verTxt" style="color:#64748b;font-weight:600"></span></span>
-  <span><span class="badge" id="peopleTxt"></span> <span class="badge" id="status">실시간 군중 시뮬레이션</span></span></h4>
-  <div class="wrap" id="wrap">
-    <canvas id="cv" style="display:none"></canvas><canvas id="hm" style="display:none;opacity:.75;pointer-events:none"></canvas><canvas id="pp" style="display:none;pointer-events:none"></canvas>
-    <div class="c3" id="c3"></div>
-    <div class="legend" id="legend"></div>
-    <div class="hint" id="hint">드래그: 회전 · 휠: 확대/축소</div>
-  </div>
-</div>
-<div class="grid2">
-  <div class="card"><h4><span>🔥 실시간 군중 밀집도</span><span class="badge" id="envTxt">일반 상태</span></h4>
-    <div class="wrap" id="wrap2"><canvas id="hm2"></canvas></div>
-    <div class="hl"><span style="color:#10b981">🟢 원활</span><span style="color:#eab308">🟡 보통(0.25~)</span><span style="color:#f97316">🟠 혼잡(0.5~)</span><span style="color:#ef4444">🔴 위험(0.9~)</span></div>
-    <div style="font-size:10px;color:#94a3b8;margin-top:4px;text-align:center">단위: 명/㎡ · 구역 체류 + 출입구 이동 군중 반영</div>
-  </div>
-  <div class="card"><h4><span>📊 현재 상태</span></h4>
-    <div class="kpi">
-      <div>현재 최대 밀도<b id="kPeak">-</b></div><div>혼잡 구역 비율<b id="kBott">-</b></div>
-      <div>응급 최대 도달<b id="kMed">-</b></div><div>위험 구역<b id="kRisk">-</b></div>
-    </div>
-    <div style="font-size:12px;font-weight:800;margin:6px 0">📍 배치된 구역 <span id="zCnt" style="color:#64748b"></span></div>
-    <div class="zl" id="zlist"></div>
-  </div>
-</div>
-<script>
-const D = __DATA__;
-const WW=160, WH=100, GX=40, GY=25;
-let mode='after', sim=true, rain=false, emg=null, tHour=14, tlTimer=null, is3d=true, heat3=false;
-const $=id=>document.getElementById(id);
-const cv=$('cv'), hm=$('hm'), pp=$('pp'), hm2=$('hm2');
-const cx=cv.getContext('2d'), hx=hm.getContext('2d'), px=pp.getContext('2d'), h2=hm2.getContext('2d');
-const wrap=$('wrap'), wrap2=$('wrap2');
-let W=0,H=0,S=1,W2=0,H2=0;
-const Z=()=> mode==='after'?D.zones:D.before_zones;
-const mpu=D.mpu, cellArea=(WW/GX)*(WH/GY)*mpu*mpu;
-const SHB=D.shape.bbox, SHC=[(SHB[0]+SHB[2])/2,(SHB[1]+SHB[3])/2];
-function outlinePath(c,sx,sy){ const o=D.shape.outline; c.beginPath(); o.forEach((p,i)=>{ if(i) c.lineTo(p[0]*sx,p[1]*sy); else c.moveTo(p[0]*sx,p[1]*sy); }); c.closePath(); }
-function pieces(step){ const o=D.shape.outline, out=[]; for(let i=0;i<o.length;i++){ const a=o[i], b=o[(i+1)%o.length]; const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy), n=Math.max(1,Math.round(L/step));
-  for(let k=0;k<n;k++){ const t0=k/n,t1=(k+1)/n; const x0=a[0]+dx*t0,y0=a[1]+dy*t0,x1=a[0]+dx*t1,y1=a[1]+dy*t1; out.push({x:(x0+x1)/2,y:(y0+y1)/2,len:Math.hypot(x1-x0,y1-y0),ang:Math.atan2(dy,dx)}); } } return out; }
-function insideShape(x,y){ const o=D.shape.outline; let ins=false; for(let i=0,j=o.length-1;i<o.length;j=i++){ const xi=o[i][0],yi=o[i][1],xj=o[j][0],yj=o[j][1]; if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) ins=!ins; } return ins; }
-function mv(a,nx,ny){ if(D.shape.kind!=='poly'||insideShape(nx,ny)||!insideShape(a.x,a.y)){a.x=nx;a.y=ny;} else if(insideShape(nx,a.y)){a.x=nx;} else if(insideShape(a.x,ny)){a.y=ny;} else { a.x+=(SHC[0]-a.x)*.03; a.y+=(SHC[1]-a.y)*.03; } }
-function treePos(pc){ const vx=SHC[0]-pc.x, vy=SHC[1]-pc.y, vl=Math.hypot(vx,vy)||1; return [pc.x+vx/vl*3.5, pc.y+vy/vl*3.5]; }
-const NAG=320; let agents=[]; let raindrops=[];
-let heat=new Float32Array(GX*GY);
-
-$('legend').innerHTML=
- [['#8b5cf6','공연장'],['#3b82f6','체험부스'],['#f59e0b','푸드존'],['#10b981','휴게공간'],['#ef4444','응급의료'],['#0ea5e9','안내센터'],['#06b6d4','화장실'],['#ec4899','사용자 부스'],['#1e293b','출입구']]
- .map(a=>`<span><i style="background:${a[0]}"></i>${a[1]}</span>`).join('');
-
-function resize(){
-  W=wrap.clientWidth; H=wrap.clientHeight; S=W/WW;
-  [cv,hm,pp].forEach(c=>{c.width=W;c.height=H});
-  W2=wrap2.clientWidth; H2=wrap2.clientHeight; hm2.width=W2; hm2.height=H2;
-  drawBase(); if(R3){ size3(); }
-}
-function factor(h){ if(h<12)return .55; if(h<15)return 1.0; if(h<18)return .8; return .65; }
-function descT(h){ return h<12?'개장 초반 - 순차 입장(여유)':h<15?'피크 - 푸드·공연 집중(혼잡)':h<18?'오후 - 체험·휴게 분산':'폐장 전 - 공연 집중 및 퇴장'; }
-function pickZone(){
-  const Zs=Z(); let tot=0; const w=Zs.map(z=>{const a=(z.type==='medical')?0:z.attract*(z.type==='stage'&&tHour>=18?1.5:1)*(z.type==='food'&&tHour>=12&&tHour<15?1.5:1);tot+=a;return a});
-  let r=Math.random()*tot; for(let i=0;i<Zs.length;i++){ r-=w[i]; if(r<=0) return i; } return 0;
-}
-function spawn(a){
-  const g=D.gates[Math.floor(Math.random()*D.gates.length)];
-  let sx=g.x,sy=g.y; for(let k=0;k<12;k++){ const tx=g.x+(Math.random()-.5)*6, ty=g.y+(Math.random()-.5)*6; if(insideShape(tx,ty)){sx=tx;sy=ty;break;} } a.x=sx; a.y=sy; a.leaving=false; a.dwell=0; a.zone=pickZone(); setTarget(a);
-}
-function setTarget(a){
-  const z=Z()[a.zone]; a.tx=z.x-1.5+Math.random()*(z.w+3); a.ty=z.y-1.5+Math.random()*(z.h+3);
-  a.sp=.28+Math.random()*.2;
-}
-function initAgents(){
-  agents=[]; for(let i=0;i<NAG;i++){ const a={}; spawn(a); const t=Math.random(); a.x=a.x+(a.tx-a.x)*t; a.y=a.y+(a.ty-a.y)*t; a.active=i<NAG*factor(tHour); agents.push(a);}
-  raindrops=[]; for(let i=0;i<110;i++) raindrops.push({x:Math.random()*W,y:Math.random()*H,l:7+Math.random()*10,v:6+Math.random()*6});
-}
-function step(dt){
-  const f=factor(tHour); const n=Math.floor(NAG*f);
-  agents.forEach((a,i)=>{ a.active=i<n; if(!a.active) return;
-    if(a.dwell>0){ a.dwell-=dt; a.x+=(Math.random()-.5)*.06; a.y+=(Math.random()-.5)*.06;
-      if(a.dwell<=0){ if(Math.random()<.35){ a.leaving=true; const g=D.gates[Math.floor(Math.random()*D.gates.length)]; a.tx=g.x; a.ty=g.y; } else { a.zone=pickZone(); setTarget(a);} } return; }
-    let dx=a.tx-a.x, dy=a.ty-a.y, d=Math.hypot(dx,dy);
-    let sp=a.sp*(rain?1.6:1);
-    if(rain&&!a.leaving){ const st=Z().find(z=>z.type==='stage'); if(st){a.tx=st.x+st.w/2; a.ty=st.y+st.h/2+st.h*.7; dx=a.tx-a.x; dy=a.ty-a.y; d=Math.hypot(dx,dy);} }
-    if(emg){ const ex=a.x-emg.x, ey=a.y-emg.y, ed=Math.hypot(ex,ey); if(ed<9&&ed>0){ a.x+=ex/ed*.5; a.y+=ey/ed*.5; } }
-    if(d<1.2){ if(a.leaving){ spawn(a);} else { a.dwell=3+Math.random()*9; } }
-    else { mv(a,a.x+dx/d*sp,a.y+dy/d*sp); }
-  });
-  for(let i=0;i<agents.length;i+=2){ const a=agents[i]; if(!a.active) continue; const b=agents[(i*7+3)%agents.length]; if(!b.active) continue;
-    const dx=a.x-b.x, dy=a.y-b.y, d=Math.hypot(dx,dy); if(d>0&&d<1.2){ a.x+=dx/d*.1; a.y+=dy/d*.1; } }
-  if(emg){ const meds=Z().filter(z=>z.type==='medical'); let best=null,bd=1e9;
-    meds.forEach(m=>{const d=Math.hypot(m.x+m.w/2-emg.x,m.y+m.h/2-emg.y); if(d<bd){bd=d;best=m;}});
-    emg.target=best;
-    if(best&&bd>1.5){ emg.x+=(best.x+best.w/2-emg.x)/bd*.9; emg.y+=(best.y+best.h/2-emg.y)/bd*.9;
-      $('status').textContent='🚑 응급 이송 중… 의료센터까지 '+(bd*mpu).toFixed(0)+'m';
-    } else if(best){ $('status').textContent='✅ 의료센터 도착 · 이송 소요 '+Math.round((performance.now()-emg.t0)/1000)+'초(시뮬레이션)'; } }
-  raindrops.forEach(r=>{r.y+=r.v;r.x-=1;if(r.y>H){r.y=0;r.x=Math.random()*W}});
-}
-function updateHeat(){
-  const n=Math.floor(NAG*factor(tHour)); const per=D.params.visitors*.5/Math.max(1,n)*factor(tHour);
-  const g=new Float32Array(GX*GY);
-  agents.forEach(a=>{ if(!a.active) return; const ix=Math.min(GX-1,Math.max(0,Math.floor(a.x/(WW/GX)))), iy=Math.min(GY-1,Math.max(0,Math.floor(a.y/(WH/GY)))); g[iy*GX+ix]+=per; });
-  const o=new Float32Array(GX*GY);
-  for(let y=0;y<GY;y++)for(let x=0;x<GX;x++){ let s=0,c=0; for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const xx=x+i,yy=y+j; if(xx>=0&&xx<GX&&yy>=0&&yy<GY){const w=(i==0&&j==0)?2:1; s+=g[yy*GX+xx]*w; c+=w;}} o[y*GX+x]=s/c/cellArea; }
-  for(let k=0;k<o.length;k++) heat[k]=heat[k]*.85+o[k]*.15;
-}
-function heatColor(d){ if(d<.12) return null; if(d<.25) return 'rgba(16,185,129,.5)'; if(d<.5) return 'rgba(234,179,8,.65)'; if(d<.9) return 'rgba(249,115,22,.75)'; return 'rgba(239,68,68,.88)'; }
-function drawHeat(ctx,w,h,bg){
-  ctx.clearRect(0,0,w,h);
-  if(bg){ ctx.fillStyle='#020617'; ctx.fillRect(0,0,w,h); ctx.save(); outlinePath(ctx,w/WW,h/WH); ctx.fillStyle='#0f172a'; ctx.fill(); ctx.restore(); }
-  const cw=w/GX, ch=h/GY; let peak=0,hot=0,act=0;
-  ctx.save(); outlinePath(ctx,w/WW,h/WH); ctx.clip();
-  for(let y=0;y<GY;y++)for(let x=0;x<GX;x++){ const d=heat[y*GX+x]; peak=Math.max(peak,d); if(d>=.12) act++; if(d>=.5) hot++; const c=heatColor(d); if(c){ ctx.fillStyle=c; ctx.fillRect(x*cw,y*ch,cw+.5,ch+.5);} }
-  ctx.restore();
-  if(bg){ outlinePath(ctx,w/WW,h/WH); ctx.strokeStyle='#94a3b8'; ctx.lineWidth=2; ctx.stroke();
-    Z().forEach(z=>{ ctx.strokeStyle='rgba(255,255,255,.45)'; ctx.lineWidth=1; ctx.strokeRect(z.x*w/WW,z.y*h/WH,z.w*w/WW,z.h*h/WH);
-      ctx.fillStyle='rgba(255,255,255,.85)'; ctx.font='bold 10px Pretendard,sans-serif'; ctx.textAlign='center'; ctx.fillText(z.name,(z.x+z.w/2)*w/WW,(z.y+z.h/2)*h/WH+3,z.w*w/WW); }); }
-  return [peak,hot,act];
-}
-/* ---------- 2D 평면도 ---------- */
-function drawBase(){
-  const T=D.theme; cx.clearRect(0,0,W,H);
-  cx.fillStyle='#334155'; cx.fillRect(0,0,W,H);
-  cx.save(); outlinePath(cx,S,S); cx.clip();
-  cx.fillStyle=rain?T.groundRain:T.ground; cx.fillRect(0,0,W,H);
-  if(T.kind==='outdoor'&&!D.shape.dome){ cx.fillStyle='rgba(0,0,0,.14)'; pieces(9).forEach(pc=>{ const t=treePos(pc); cx.beginPath(); cx.arc(t[0]*S,t[1]*S,11,0,7); cx.fill(); }); }
-  else { cx.strokeStyle='rgba(0,0,0,.12)'; cx.lineWidth=1; for(let x=0;x<W;x+=W/16){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,H);cx.stroke();} for(let y=0;y<H;y+=H/10){cx.beginPath();cx.moveTo(0,y);cx.lineTo(W,y);cx.stroke();} }
-  cx.restore();
-  outlinePath(cx,S,S); cx.strokeStyle='#f8fafc'; cx.lineWidth=D.shape.dome?3:5; cx.stroke();
-  if(D.shape.dome){ cx.save(); cx.setLineDash([8,6]); cx.strokeStyle='rgba(255,255,255,.55)'; cx.lineWidth=1.5; cx.beginPath(); cx.ellipse(SHC[0]*S,SHC[1]*S,(SHB[2]-SHB[0])/2*S*.94,(SHB[3]-SHB[1])/2*S*.94,0,0,7); cx.stroke(); cx.restore(); }
-  cx.strokeStyle=T.path; cx.globalAlpha=.6; cx.lineCap='round'; cx.lineWidth=Math.max(4,S*1.6);
-  Z().forEach(z=>{ const g=nearestGate(z); cx.beginPath(); cx.moveTo(g.x*S,g.y*S); cx.lineTo((z.x+z.w/2)*S,(z.y+z.h/2)*S); cx.stroke(); });
-  cx.globalAlpha=1;
-  Z().forEach(z=>{ const x=z.x*S,y=z.y*S,w=z.w*S,h=z.h*S;
-    cx.fillStyle='rgba(0,0,0,.28)'; cx.fillRect(x+3,y+3,w,h);
-    cx.fillStyle=z.color; cx.beginPath(); cx.roundRect(x,y,w,h,7); cx.fill(); cx.strokeStyle='#fff'; cx.lineWidth=2; cx.stroke();
-    cx.textAlign='center'; cx.fillStyle='#fff';
-    cx.font=Math.max(14,Math.min(26,h*.4))+'px sans-serif'; cx.fillText(z.icon,x+w/2,y+h/2-2);
-    cx.font='bold '+Math.max(11,Math.min(15,w/6.5))+'px Pretendard,sans-serif'; cx.shadowColor='rgba(0,0,0,.6)'; cx.shadowBlur=3;
-    cx.fillText(z.name,x+w/2,y+h/2+Math.max(14,Math.min(20,h*.28)),w-6); cx.shadowBlur=0; });
-  D.gates.forEach(g=>{ cx.fillStyle='#1e293b'; cx.beginPath(); cx.arc(g.x*S,g.y*S,10,0,7); cx.fill(); cx.strokeStyle='#fff'; cx.lineWidth=2; cx.stroke();
-    cx.fillStyle='#fff'; cx.font='12px sans-serif'; cx.textAlign='center'; cx.fillText('🚪',g.x*S,g.y*S+4);
-    const up=g.y>SHC[1]; cx.font='bold 11px Pretendard'; cx.fillStyle='#fff'; cx.shadowColor='#000'; cx.shadowBlur=3; cx.fillText(g.name,g.x*S,g.y*S+(up?-15:24)); cx.shadowBlur=0; });
-}
-function nearestGate(z){ let b=D.gates[0],bd=1e9; D.gates.forEach(g=>{const d=Math.hypot(g.x-(z.x+z.w/2),g.y-(z.y+z.h/2)); if(d<bd){bd=d;b=g;}}); return b; }
-function drawPeople(){ px.clearRect(0,0,W,H);
-  agents.forEach(a=>{ if(!a.active) return; px.fillStyle=rain?'#93c5fd':'#fff'; px.strokeStyle='rgba(0,0,0,.4)'; px.lineWidth=.8; px.beginPath(); px.arc(a.x*S,a.y*S,3.2,0,7); px.fill(); px.stroke(); });
-  if(emg){ px.strokeStyle='#ef4444'; px.lineWidth=3; px.setLineDash([6,5]);
-    if(emg.target){ px.beginPath(); px.moveTo(emg.x*S,emg.y*S); px.lineTo((emg.target.x+emg.target.w/2)*S,(emg.target.y+emg.target.h/2)*S); px.stroke(); }
-    px.setLineDash([]); px.fillStyle='#ef4444'; px.beginPath(); px.arc(emg.x*S,emg.y*S,9+Math.sin(performance.now()/120)*2,0,7); px.fill();
-    px.fillStyle='#fff'; px.font='bold 12px Pretendard'; px.textAlign='center'; px.fillText('🚑 응급',emg.x*S,emg.y*S-14); }
-  if(rain){ px.strokeStyle='rgba(147,197,253,.55)'; px.lineWidth=1.1; raindrops.forEach(r=>{px.beginPath();px.moveTo(r.x,r.y);px.lineTo(r.x-2,r.y+r.l);px.stroke();}); }
-}
-/* ---------- 3D 아이소메트릭 ---------- */
-let R3=null,S3,C3,G3,bodyM,headM,rainPts,emgGrp,emgLine,heatPlane,heatTex;
-let yaw=.55,pitch=.72,zoom3=1.45*Math.min(1.45,WW/Math.max(D.shape.bbox[2]-D.shape.bbox[0],(D.shape.bbox[3]-D.shape.bbox[1])*1.3))*(D.shape.dome?.82:1),drag=false,lx=0,ly=0;
-const DUM=new THREE.Object3D();
-function M(c,o){return new THREE.MeshLambertMaterial(Object.assign({color:new THREE.Color(c)},o||{}));}
-function bx(p,w,h,d,c,x,y,z,o){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),M(c,o));m.position.set(x,y,z);p.add(m);return m;}
-function cyl(p,rt,rb,h,c,x,y,z,seg){const m=new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,h,seg||12),M(c));m.position.set(x,y,z);p.add(m);return m;}
-function cone(p,r,h,c,x,y,z,seg){const m=new THREE.Mesh(new THREE.ConeGeometry(r,h,seg||8),M(c));m.position.set(x,y,z);p.add(m);return m;}
-function tree(p,x,z){cyl(p,.5,.6,2.4,'#7c4a21',x,1.4,z,8);cone(p,2.3,4.6,'#2f855a',x,4.8,z,8);}
-function seats(p,rows,cols,x0,z0,dx,dz,c){const im=new THREE.InstancedMesh(new THREE.BoxGeometry(1.2,1,1.2),M(c),rows*cols);let k=0;
-  for(let r=0;r<rows;r++)for(let q=0;q<cols;q++){DUM.position.set(x0+q*dx,.9,z0+r*dz);DUM.scale.set(1,1,1);DUM.rotation.set(0,0,0);DUM.updateMatrix();im.setMatrixAt(k++,DUM.matrix);} p.add(im);}
-function labelSprite(text,color){
-  const c=document.createElement('canvas'); c.width=640; c.height=150; const t=c.getContext('2d');
-  t.fillStyle='rgba(255,255,255,.96)'; t.beginPath(); t.roundRect(4,4,632,142,28); t.fill();
-  t.fillStyle=color; t.beginPath(); t.roundRect(4,4,30,142,14); t.fill();
-  t.strokeStyle='rgba(15,23,42,.25)'; t.lineWidth=3; t.beginPath(); t.roundRect(4,4,632,142,28); t.stroke();
-  t.fillStyle='#0f172a'; t.font='bold 66px Pretendard,sans-serif'; t.textAlign='center'; t.textBaseline='middle'; t.fillText(text,340,78,570);
-  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true})); sp.renderOrder=10; return sp;
-}
-function buildZone3(z){
-  const g=new THREE.Group(); const cxz=z.x+z.w/2-WW/2, czz=z.y+z.h/2-WH/2; g.position.set(cxz,0,czz); G3.add(g);
-  const w=z.w,h=z.h; const pale=new THREE.Color(z.color).lerp(new THREE.Color('#ffffff'),.65).getStyle();
-  bx(g,w,.5,h,pale,0,.25,0);
-  let top=8;
-  switch(z.type){
-    case 'stage':{ const s=(czz<0)?1:-1;
-      bx(g,w*.96,3,h*.42,'#7c3aed',0,2,-s*h*.28); bx(g,w*.96,.4,h*.42,'#ddd6fe',0,3.7,-s*h*.28);
-      bx(g,w*.92,z.ht,.9,'#312e81',0,3.5+z.ht/2,-s*h*.48,{emissive:new THREE.Color('#4338ca')});
-      [-1,1].forEach(k=>bx(g,1.2,z.ht+1.5,1.2,'#1e1b4b',k*w*.46,(z.ht+1.5)/2+3.5,-s*h*.48));
-      const rows=Math.max(1,Math.floor((h*.5-2.2)/1.9)+1), cols=Math.max(3,Math.floor((w-3)/1.9));
-      seats(g,rows,cols,-(cols-1)*.95,s*1.4,1.9,s*1.9,'#1e3a8a'); top=z.ht+6; break; }
-    case 'food':{
-      bx(g,w*.9,3,2,'#92400e',0,2,-h*.33);
-      const n=Math.max(3,Math.round(w/3)); for(let i=0;i<n;i++) bx(g,w*.95/n,.5,h*.42,(i%2?'#ffffff':z.color),-w*.475+(i+.5)*w*.95/n,6.4,-h*.28);
-      [-1,1].forEach(k=>{cyl(g,.25,.25,5.8,'#475569',k*w*.46,3.3,-h*.48,8);cyl(g,.25,.25,5.8,'#475569',k*w*.46,3.3,-h*.08,8);});
-      [-1,0,1].forEach(t=>{const x=t*w*.28; cyl(g,1.5,1.5,.3,'#ffffff',x,2,h*.2,16); cyl(g,.3,.3,1.6,'#64748b',x,1.2,h*.2,8); cyl(g,.6,.6,.8,z.color,x-2.2,1,h*.2,10); cyl(g,.6,.6,.8,z.color,x+2.2,1,h*.2,10);});
-      top=8; break; }
-    case 'rest':{
-      bx(g,w*.96,.5,h*.96,'#4fa15a',0,.5,0); bx(g,w*.4,1,1.3,'#a16207',-w*.2,1.3,h*.12); bx(g,w*.4,1,1.3,'#a16207',w*.2,1.3,-h*.12);
-      tree(g,-w*.4,-h*.3); tree(g,w*.4,h*.3); tree(g,w*.38,-h*.36); top=9; break; }
-    case 'medical':{
-      bx(g,w*.8,5,h*.7,'#ffffff',0,3,0); bx(g,w*.82,1,h*.72+.1,'#ef4444',0,2.4,0); bx(g,w*.84,.8,h*.74,'#f1f5f9',0,5.8,0);
-      bx(g,4.2,.3,1.3,'#ef4444',0,6.4,0); bx(g,1.3,.3,4.2,'#ef4444',0,6.4,0); top=8.5; break; }
-    case 'info':{
-      bx(g,w*.6,3,h*.5,'#0ea5e9',0,2,0); bx(g,w*.85,.5,h*.75,'#e0f2fe',0,3.8,0); cyl(g,.2,.2,4.5,'#334155',w*.36,2.8,h*.3,8); cyl(g,1.1,1.1,.4,'#0ea5e9',w*.36,5.2,h*.3,16); top=7.5; break; }
-    case 'restroom':{
-      bx(g,w*.8,4,h*.7,'#e2e8f0',0,2.5,0); bx(g,w*.86,.6,h*.76,'#06b6d4',0,4.8,0);
-      bx(g,1.4,2.4,.2,'#0f172a',-w*.15,1.7,h*.36); bx(g,1.4,2.4,.2,'#0f172a',w*.15,1.7,h*.36); top=7; break; }
-    default:{ /* booth, custom : 텐트 */
-      const px_=w*.38,pz=h*.38; [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(a=>cyl(g,.25,.25,4.8,'#475569',a[0]*px_,2.9,a[1]*pz,8));
-      const roof=new THREE.Mesh(new THREE.ConeGeometry(1,3.4,4),M(z.color)); roof.rotation.y=Math.PI/4; roof.scale.set(w*.72,1,h*.72); roof.position.set(0,6.7,0); g.add(roof);
-      bx(g,w*.5,1.6,h*.22,'#f8fafc',0,1.4,h*.15); [-1,0,1].forEach(k=>bx(g,1.4,1,1.4,z.color,k*w*.16,2.7,h*.15)); top=9.5; }
-  }
-  const sp=labelSprite(z.icon+' '+z.name,z.color); const ww=Math.min(30,Math.max(14,z.name.length*2.1+8)); sp.scale.set(ww,ww*150/640,1); sp.position.set(0,top+3,0); g.add(sp);
-}
-function shapeGeo(scale){ const sh=new THREE.Shape(); D.shape.outline.forEach((p,i)=>{ const x=(p[0]-WW/2)*scale, y=-(p[1]-WH/2)*scale; if(i) sh.lineTo(x,y); else sh.moveTo(x,y); }); sh.closePath(); return sh; }
-function slab(depth,color,y,scale){ const m=new THREE.Mesh(new THREE.ExtrudeGeometry(shapeGeo(scale),{depth:depth,bevelEnabled:false}),M(color)); m.rotation.x=-Math.PI/2; m.position.y=y; G3.add(m); return m; }
-let domeMeshes=[], domeOn=true;
-function buildScene3(){
-  if(G3) S3.remove(G3); G3=new THREE.Group(); S3.add(G3);
-  const T=D.theme, dome=D.shape.dome; const ground=rain?T.groundRain:T.ground;
-  slab(4,'#e5e7eb',-4.7,1.04); slab(.7,ground,-.7,1);
-  if(T.kind==='outdoor'&&!dome){ pieces(9).forEach((pc,i)=>{ if(i%2) return; const t=treePos(pc); tree(G3,t[0]-WW/2,t[1]-WH/2); }); }
-  const hh=dome?2.4:5;
-  pieces(5).forEach(pc=>{ if(D.gates.some(g=>Math.hypot(g.x-pc.x,g.y-pc.y)<7.5)) return; const m=bx(G3,pc.len+.3,hh,1.4,'#f8fafc',pc.x-WW/2,hh/2,pc.y-WH/2); m.rotation.y=-pc.ang; });
-  const pcol=T.path;
-  Z().forEach(z=>{ const g=nearestGate(z); const x1=g.x-WW/2,z1=g.y-WH/2,x2=z.x+z.w/2-WW/2,z2=z.y+z.h/2-WH/2; const dx=x2-x1,dz=z2-z1,L=Math.hypot(dx,dz);
-    const m=bx(G3,L,.3,3.2,pcol,(x1+x2)/2,.15,(z1+z2)/2); m.rotation.y=-Math.atan2(dz,dx); });
-  D.gates.forEach(g=>{ const gg=new THREE.Group(); gg.position.set(g.x-WW/2,0,g.y-WH/2); gg.rotation.y=-g.ang; G3.add(gg);
-    bx(gg,1.6,8,1.6,'#1e293b',-6,4,0); bx(gg,1.6,8,1.6,'#1e293b',6,4,0); bx(gg,14,1.4,1.8,'#1e293b',0,8,0);
-    const sp=labelSprite('🚪 '+g.name,'#1e293b'); sp.scale.set(15,15*150/640,1); sp.position.set(g.x-WW/2,12,g.y-WH/2); G3.add(sp); });
-  Z().forEach(buildZone3);
-  domeMeshes=[];
-  if(dome){ const bw=SHB[2]-SHB[0], bh=SHB[3]-SHB[1];
-    const dm=new THREE.Mesh(new THREE.SphereGeometry(1,48,20,0,Math.PI*2,0,Math.PI/2),new THREE.MeshLambertMaterial({color:0xbfdbfe,transparent:true,opacity:.14,side:THREE.DoubleSide,depthWrite:false}));
-    dm.scale.set(bw/2,bw/2*.6,bh/2); dm.renderOrder=1; G3.add(dm);
-    const wf=new THREE.Mesh(new THREE.SphereGeometry(1,16,6,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x475569,wireframe:true,transparent:true,opacity:.16,depthWrite:false}));
-    wf.scale.copy(dm.scale); wf.renderOrder=1; G3.add(wf); domeMeshes=[dm,wf]; domeMeshes.forEach(m=>m.visible=domeOn); }
-  $('zlist').innerHTML=Z().map(z=>`<span style="--c:${z.color}">${z.icon} ${z.name}</span>`).join(''); $('zCnt').textContent='('+Z().length+'개)';
-}
-function initR3(){
-  const el=$('c3'); try{ R3=new THREE.WebGLRenderer({antialias:true}); }catch(e){ R3=null; is3d=false; $('hint').textContent='이 브라우저는 3D를 지원하지 않아 2D로 표시합니다'; return; }
-  el.appendChild(R3.domElement);
-  S3=new THREE.Scene(); S3.background=new THREE.Color('#dbe8f5'); S3.add(new THREE.AmbientLight(0xffffff,.82)); const dl=new THREE.DirectionalLight(0xffffff,.65); dl.position.set(-60,120,50); S3.add(dl);
-  C3=new THREE.OrthographicCamera(-1,1,1,-1,-800,1200);
-  const N=NAG; bodyM=new THREE.InstancedMesh(new THREE.CylinderGeometry(.55,.65,2.4,8),M('#f97316'),N); headM=new THREE.InstancedMesh(new THREE.SphereGeometry(.7,10,8),M('#fde68a'),N);
-  bodyM.frustumCulled=false; headM.frustumCulled=false; S3.add(bodyM); S3.add(headM);
-  const rp=new Float32Array(500*3); for(let i=0;i<500;i++){rp[i*3]=(Math.random()-.5)*WW;rp[i*3+1]=Math.random()*60;rp[i*3+2]=(Math.random()-.5)*WH;}
-  rainPts=new THREE.Points(new THREE.BufferGeometry().setAttribute('position',new THREE.BufferAttribute(rp,3)),new THREE.PointsMaterial({color:0x60a5fa,size:1.2})); rainPts.visible=false; rainPts.frustumCulled=false; S3.add(rainPts);
-  emgGrp=new THREE.Mesh(new THREE.SphereGeometry(1.8,16,12),new THREE.MeshBasicMaterial({color:0xef4444})); emgGrp.visible=false; S3.add(emgGrp);
-  emgLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:0xef4444})); emgLine.visible=false; emgLine.frustumCulled=false; S3.add(emgLine);
-  heatTex=new THREE.CanvasTexture(hm); heatPlane=new THREE.Mesh(new THREE.PlaneGeometry(WW,WH),new THREE.MeshBasicMaterial({map:heatTex,transparent:true,opacity:.8,depthWrite:false})); heatPlane.rotation.x=-Math.PI/2; heatPlane.position.y=.5; heatPlane.visible=false; S3.add(heatPlane);
-  const e=R3.domElement;
-  e.onmousedown=ev=>{drag=true;lx=ev.clientX;ly=ev.clientY;}; window.addEventListener('mouseup',()=>drag=false);
-  e.onmousemove=ev=>{ if(!drag)return; yaw-=(ev.clientX-lx)*.008; pitch=Math.min(1.35,Math.max(.3,pitch+(ev.clientY-ly)*.006)); lx=ev.clientX; ly=ev.clientY; };
-  e.addEventListener('wheel',ev=>{ev.preventDefault(); zoom3=Math.min(3.2,Math.max(.6,zoom3*(ev.deltaY<0?1.1:.9)));},{passive:false});
-  e.addEventListener('touchstart',ev=>{drag=true;lx=ev.touches[0].clientX;ly=ev.touches[0].clientY;},{passive:true});
-  e.addEventListener('touchmove',ev=>{ if(!drag)return; const t=ev.touches[0]; yaw-=(t.clientX-lx)*.008; pitch=Math.min(1.35,Math.max(.3,pitch+(t.clientY-ly)*.006)); lx=t.clientX; ly=t.clientY;},{passive:true});
-  e.addEventListener('touchend',()=>drag=false);
-  size3(); buildScene3();
-}
-function size3(){ if(!R3) return; const el=$('c3'); const w=el.clientWidth,h=el.clientHeight; R3.setPixelRatio(Math.min(2,window.devicePixelRatio||1)); R3.setSize(w,h); const f=72,asp=w/h; C3.left=-f*asp; C3.right=f*asp; C3.top=f; C3.bottom=-f; C3.updateProjectionMatrix(); }
-function render3(){
-  if(!R3) return; const Rr=400;
-  C3.position.set(Math.sin(yaw)*Math.cos(pitch)*Rr,Math.sin(pitch)*Rr,Math.cos(yaw)*Math.cos(pitch)*Rr); C3.lookAt(0,0,0); C3.zoom=zoom3; C3.updateProjectionMatrix();
-  for(let i=0;i<agents.length;i++){ const a=agents[i]; const s=a.active?1:0.0001; DUM.rotation.set(0,0,0); DUM.scale.set(s,s,s);
-    DUM.position.set(a.x-WW/2,1.7,a.y-WH/2); DUM.updateMatrix(); bodyM.setMatrixAt(i,DUM.matrix); DUM.position.y=3.6; DUM.updateMatrix(); headM.setMatrixAt(i,DUM.matrix); }
-  bodyM.instanceMatrix.needsUpdate=true; headM.instanceMatrix.needsUpdate=true; bodyM.material.color.set(rain?'#2563eb':'#f97316');
-  rainPts.visible=rain; if(rain){ const p=rainPts.geometry.attributes.position; for(let i=0;i<500;i++){ let y=p.getY(i)-1.4; if(y<0) y=60; p.setY(i,y);} p.needsUpdate=true; }
-  if(emg){ emgGrp.visible=true; emgGrp.position.set(emg.x-WW/2,3,emg.y-WH/2); const sc=1+Math.sin(performance.now()/120)*.25; emgGrp.scale.set(sc,sc,sc);
-    if(emg.target){ emgLine.visible=true; const tp=emgLine.geometry.attributes.position; tp.setXYZ(0,emg.x-WW/2,3,emg.y-WH/2); tp.setXYZ(1,emg.target.x+emg.target.w/2-WW/2,3,emg.target.y+emg.target.h/2-WH/2); tp.needsUpdate=true; } }
-  else { emgGrp.visible=false; emgLine.visible=false; }
-  heatPlane.visible=heat3; if(heat3) heatTex.needsUpdate=true;
-  R3.render(S3,C3);
-}
-/* ---------- 루프 & 컨트롤 ---------- */
-let last=performance.now(), kt=0;
-function loop(now){ const dt=(now-last)/1000; last=now;
-  if(sim){ step(dt); }
-  updateHeat(); const r=drawHeat(hx,W,H,false); drawHeat(h2,W2,H2,true);
-  if(is3d) render3(); else drawPeople();
-  const n=Math.round(D.params.visitors*.5*factor(tHour)); $('peopleTxt').textContent='시뮬레이션 군중 ≈ '+n.toLocaleString()+'명';
-  kt+=dt; if(kt>.4){ kt=0; $('kPeak').textContent=r[0].toFixed(2)+' 명/㎡'; $('kBott').textContent=(r[2]?Math.round(100*r[1]/r[2]):0)+'%';
-    const de=mode==='after'?D.detail:D.before_detail; $('kMed').textContent=Math.round(de.t_max)+'초'; $('kRisk').textContent=de.risk_zones+'개소'; }
-  requestAnimationFrame(loop);
-}
-function setView(v3){ if(v3&&!R3) return; is3d=v3; $('c3').style.display=v3?'block':'none'; [cv,hm,pp].forEach(c=>c.style.display=v3?'none':'block');
-  hm.style.display=(!v3&&heat3)?'block':'none'; $('b3d').className=v3?'on':''; $('b2d').className=v3?'':'on'; $('hint').style.display=v3?'block':'none'; $('bDome').style.display=(v3&&D.shape.dome)?'inline-block':'none';
-  if(v3) size3(); }
-function togDome(){ domeOn=!domeOn; domeMeshes.forEach(m=>m.visible=domeOn); $('bDome').className=domeOn?'on':''; $('bDome').textContent=domeOn?'🏛️ 지붕 표시':'🏛️ 지붕 숨김'; }
-function togHeat3(){ heat3=!heat3; $('bHeat3').className=heat3?'on':''; if(!is3d) hm.style.display=heat3?'block':'none'; }
-function setMode(m){ mode=m; $('bMode').className=m==='after'?'on':''; $('bModeB').className=m==='before'?'on':'';
-  $('verTxt').textContent=m==='after'?'· AI 최적 배치(종합 '+D.total.toFixed(1)+'점)':'· 설계 전(종합 '+D.before_total.toFixed(1)+'점)';
-  heat.fill(0); initAgents(); emg=null; $('bEmg').className='danger'; $('bEmg').textContent='🚨 응급환자 발생'; drawBase(); if(R3) buildScene3(); $('status').textContent='실시간 군중 시뮬레이션'; }
-function togSim(){ sim=!sim; $('bPlay').textContent=sim?'⏸ 시뮬레이션 정지':'▶ 시뮬레이션 시작'; }
-function togRain(){ rain=!rain; const b=$('bRain'); b.className='warn'+(rain?' on':''); b.textContent=rain?'🌧️ 우천(ON)':'🌧️ 우천'; $('envTxt').textContent=rain?'🌧️ 우천: 무대 쪽으로 대피':'일반 상태';
-  agents.forEach(a=>{ if(!rain&&!a.leaving) setTarget(a); }); drawBase(); if(R3) buildScene3(); }
-function togEmg(){ const b=$('bEmg');
-  if(emg){ emg=null; b.className='danger'; b.textContent='🚨 응급환자 발생'; $('status').textContent='실시간 군중 시뮬레이션'; return; }
-  const Zs=Z().filter(z=>z.type!=='medical'); const z=Zs[Math.floor(Math.random()*Zs.length)];
-  emg={x:z.x+z.w/2,y:z.y+z.h+2,trail:[],t0:performance.now(),target:null}; b.className='danger on'; b.textContent='🚨 응급 해제'; sim=true; $('bPlay').textContent='⏸ 시뮬레이션 정지'; }
-function setTime(h){ tHour=h; $('tSl').value=h; $('tTxt').textContent=h+':00'; $('tDesc').textContent=descT(h); }
-function togTl(){ const b=$('bTl'); if(tlTimer){clearInterval(tlTimer);tlTimer=null;b.textContent='▶ 재생';} else { b.textContent='⏸ 일시정지'; tlTimer=setInterval(()=>{ let n=tHour+1; if(n>20)n=10; setTime(n); },2500); } }
-window.addEventListener('resize',resize);
-setTime(14); resize(); initR3(); setView(is3d&&!!R3); setMode('after'); resize(); requestAnimationFrame(loop);
-</script></body></html>
-"""
+TWIN_TEMPLATE = '\n<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">\n<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>\n<style>\n*{box-sizing:border-box;margin:0;padding:0}\nbody{font-family:Pretendard,-apple-system,system-ui,sans-serif;background:transparent;color:#0f172a}\n.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}\nbutton{cursor:pointer;border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;padding:6px 11px;border-radius:8px;font-size:12px;font-weight:700;font-family:inherit}\nbutton:hover{background:#e2e8f0}\nbutton.on{background:#2563eb;color:#fff;border-color:#1d4ed8}\nbutton.warn.on{background:#f59e0b;border-color:#d97706}\nbutton.danger.on{background:#ef4444;border-color:#dc2626}\n.badge{font-size:11px;font-weight:700;color:#2563eb;background:#eff6ff;padding:3px 9px;border-radius:12px}\n.card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px}\n.card h4{font-size:13px;font-weight:800;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}\n.wrap{position:relative;width:100%;background:#1e293b;border-radius:10px;overflow:hidden}\n#wrap{aspect-ratio:1.85}\n#wrap2{aspect-ratio:1.6}\n.wrap canvas,.wrap .c3{position:absolute;inset:0;width:100%;height:100%}\n.c3{cursor:grab;background:#dbe8f5}\n.legend{position:absolute;left:8px;bottom:8px;background:rgba(255,255,255,.93);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;display:grid;grid-template-columns:repeat(3,auto);gap:3px 12px;z-index:5;pointer-events:none}\n.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}\n.hint{position:absolute;right:8px;top:8px;background:rgba(15,23,42,.65);color:#fff;font-size:10.5px;padding:4px 9px;border-radius:8px;z-index:5;pointer-events:none}\n.tl{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:6px 10px;margin-bottom:8px;font-size:12px;font-weight:700;flex-wrap:wrap}\n.tl input{flex:1;min-width:120px;accent-color:#2563eb}\n.tm{background:#2563eb;color:#fff;border-radius:16px;padding:2px 10px;font-size:12px;min-width:56px;text-align:center}\n.grid2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;margin-top:12px}\n@media(max-width:900px){.grid2{grid-template-columns:1fr}}\n.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px}\n.kpi div{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:11px;color:#64748b;font-weight:700}\n.kpi b{display:block;font-size:17px;color:#0f172a}\n.hl{font-size:11px;color:#64748b;font-weight:700;display:flex;justify-content:space-around;margin-top:6px}\n.zl{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:5px;font-size:11px;font-weight:700;max-height:190px;overflow:auto}\n.zl span{background:#f8fafc;border:1px solid #e2e8f0;border-left:5px solid var(--c);border-radius:6px;padding:4px 7px}\n</style></head><body>\n<div class="bar">\n  <button id="bMode" class="on" onclick="setMode(\'after\')">✦ AI 최적 배치</button>\n  <button id="bModeB" onclick="setMode(\'before\')">설계 전(기존) 배치</button>\n  <span style="width:10px"></span>\n  <button id="b3d" class="on" onclick="setView(true)">🧊 3D 입체 설계도</button>\n  <button id="b2d" onclick="setView(false)">🗺️ 2D 평면도</button>\n  <button id="bHeat3" onclick="togHeat3()">🔥 히트맵 겹치기</button>\n  <button id="bDome" class="on" onclick="togDome()" style="display:none">🏛️ 지붕 표시</button>\n  <span style="flex:1"></span>\n  <button id="bPlay" onclick="togSim()">⏸ 시뮬레이션 정지</button>\n  <button id="bRain" class="warn" onclick="togRain()">🌧️ 우천</button>\n  <button id="bEmg" class="danger" onclick="togEmg()">🚨 응급환자 발생</button>\n</div>\n<div class="bar"><label>척도 <input type="range" min="0.6" max="3.2" step="0.1" value="1.5" oninput="zoom3=+this.value"></label>\n<label>사람 속도 <input type="range" min="0.1" max="1.5" step="0.1" value="0.5" oninput="crowdSpeed=+this.value"></label>\n<label>구급차 속도 <input type="range" min="0.1" max="1.5" step="0.1" value="0.4" oninput="ambulanceSpeed=+this.value"></label>\n<button onclick="peopleOn=!peopleOn">사람 전체 ON/OFF</button><button onclick="evacuatePeople()">사람들 탈출 시뮬레이션</button>\n<button onclick="evacuating=false;initAgents();sim=true">탈출 초기화</button><button onclick="whitePaths=!whitePaths;buildScene3()">하얀 길 ON/OFF</button></div>\n<div class="bar" id="editbar">\n<button id="editToggle" onclick="toggleEdit()">✋ 3D 편집 모드 OFF</button>\n<button onclick="deleteSelected()">선택 삭제</button><button onclick="undoEdit()">이전 조작 취소</button>\n<button onclick="save3Edit()">💾 3D 편집 저장</button>\n<button onclick="showRoute(\'exit\')">비상 대피로 표시</button><button onclick="showRoute(\'accessible\')">사회적 약자 이동경로 표시</button>\n<button onclick="clearRoutes()">경로 숨기기</button><span id="editStatus">저장 전 변경은 점수에 반영되지 않습니다.</span></div>\n<div class="tl">⏰ 시간대\n  <button id="bTl" onclick="togTl()">▶ 재생</button>\n  <input type="range" id="tSl" min="10" max="20" step="1" value="14" oninput="setTime(+this.value)">\n  <span class="tm" id="tTxt">14:00</span><span id="tDesc" style="color:#64748b;font-weight:600"></span>\n</div>\n<div class="card"><h4><span>🗺️ 행사장 디지털 트윈 <span id="verTxt" style="color:#64748b;font-weight:600"></span></span>\n  <span><span class="badge" id="peopleTxt"></span> <span class="badge" id="status">실시간 군중 시뮬레이션</span></span></h4>\n  <div class="wrap" id="wrap">\n    <canvas id="cv" style="display:none"></canvas><canvas id="hm" style="display:none;opacity:.75;pointer-events:none"></canvas><canvas id="pp" style="display:none;pointer-events:none"></canvas>\n    <div class="c3" id="c3"></div>\n    <div class="legend" id="legend"></div>\n    <div class="hint" id="hint">드래그: 회전 · 휠: 확대/축소</div>\n  </div>\n</div>\n<div class="grid2">\n  <div class="card"><h4><span>🔥 실시간 군중 밀집도</span><span class="badge" id="envTxt">일반 상태</span></h4>\n    <div class="wrap" id="wrap2"><canvas id="hm2"></canvas></div>\n    <div class="hl"><span style="color:#10b981">🟢 원활</span><span style="color:#eab308">🟡 보통(0.25~)</span><span style="color:#f97316">🟠 혼잡(0.5~)</span><span style="color:#ef4444">🔴 위험(0.9~)</span></div>\n    <div style="font-size:10px;color:#94a3b8;margin-top:4px;text-align:center">단위: 명/㎡ · 구역 체류 + 출입구 이동 군중 반영</div>\n  </div>\n  <div class="card"><h4><span>📊 현재 상태</span></h4>\n    <div class="kpi">\n      <div>현재 최대 밀도<b id="kPeak">-</b></div><div>혼잡 구역 비율<b id="kBott">-</b></div>\n      <div>응급 최대 도달<b id="kMed">-</b></div><div>위험 구역<b id="kRisk">-</b></div>\n    </div>\n    <div style="font-size:12px;font-weight:800;margin:6px 0">📍 배치된 구역 <span id="zCnt" style="color:#64748b"></span></div>\n    <div class="zl" id="zlist"></div>\n  </div>\n</div>\n<script>\nconst D = __DATA__;\nconst WW=160, WH=100, GX=40, GY=25;\nlet mode=\'after\', sim=true, rain=false, emg=null, tHour=14, tlTimer=null, is3d=true, heat3=false;\nconst $=id=>document.getElementById(id);\nconst cv=$(\'cv\'), hm=$(\'hm\'), pp=$(\'pp\'), hm2=$(\'hm2\');\nconst cx=cv.getContext(\'2d\'), hx=hm.getContext(\'2d\'), px=pp.getContext(\'2d\'), h2=hm2.getContext(\'2d\');\nconst wrap=$(\'wrap\'), wrap2=$(\'wrap2\');\nlet W=0,H=0,S=1,W2=0,H2=0;\nconst Z=()=> mode===\'after\'?D.zones:D.before_zones;\nconst mpu=D.mpu, cellArea=(WW/GX)*(WH/GY)*mpu*mpu;\nconst SHB=D.shape.bbox, SHC=[(SHB[0]+SHB[2])/2,(SHB[1]+SHB[3])/2];\nfunction outlinePath(c,sx,sy){ const o=D.shape.outline; c.beginPath(); o.forEach((p,i)=>{ if(i) c.lineTo(p[0]*sx,p[1]*sy); else c.moveTo(p[0]*sx,p[1]*sy); }); c.closePath(); }\nfunction pieces(step){ const o=D.shape.outline, out=[]; for(let i=0;i<o.length;i++){ const a=o[i], b=o[(i+1)%o.length]; const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy), n=Math.max(1,Math.round(L/step));\n  for(let k=0;k<n;k++){ const t0=k/n,t1=(k+1)/n; const x0=a[0]+dx*t0,y0=a[1]+dy*t0,x1=a[0]+dx*t1,y1=a[1]+dy*t1; out.push({x:(x0+x1)/2,y:(y0+y1)/2,len:Math.hypot(x1-x0,y1-y0),ang:Math.atan2(dy,dx)}); } } return out; }\nfunction insideShape(x,y){ const o=D.shape.outline; let ins=false; for(let i=0,j=o.length-1;i<o.length;j=i++){ const xi=o[i][0],yi=o[i][1],xj=o[j][0],yj=o[j][1]; if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) ins=!ins; } return ins; }\nfunction mv(a,nx,ny){ if(D.shape.kind!==\'poly\'||insideShape(nx,ny)||!insideShape(a.x,a.y)){a.x=nx;a.y=ny;} else if(insideShape(nx,a.y)){a.x=nx;} else if(insideShape(a.x,ny)){a.y=ny;} else { a.x+=(SHC[0]-a.x)*.03; a.y+=(SHC[1]-a.y)*.03; } }\nfunction treePos(pc){ const vx=SHC[0]-pc.x, vy=SHC[1]-pc.y, vl=Math.hypot(vx,vy)||1; return [pc.x+vx/vl*3.5, pc.y+vy/vl*3.5]; }\nconst NAG=320; let agents=[]; let raindrops=[];\nlet heat=new Float32Array(GX*GY);\n\n$(\'legend\').innerHTML=\n [[\'#8b5cf6\',\'공연장\'],[\'#3b82f6\',\'체험부스\'],[\'#f59e0b\',\'푸드존\'],[\'#10b981\',\'휴게공간\'],[\'#ef4444\',\'응급의료\'],[\'#0ea5e9\',\'안내센터\'],[\'#06b6d4\',\'화장실\'],[\'#ec4899\',\'사용자 부스\'],[\'#1e293b\',\'출입구\']]\n .map(a=>`<span><i style="background:${a[0]}"></i>${a[1]}</span>`).join(\'\');\n\nfunction resize(){\n  W=wrap.clientWidth; H=wrap.clientHeight; S=W/WW;\n  [cv,hm,pp].forEach(c=>{c.width=W;c.height=H});\n  W2=wrap2.clientWidth; H2=wrap2.clientHeight; hm2.width=W2; hm2.height=H2;\n  drawBase(); if(R3){ size3(); }\n}\nfunction factor(h){ if(h<12)return .55; if(h<15)return 1.0; if(h<18)return .8; return .65; }\nfunction descT(h){ return h<12?\'개장 초반 - 순차 입장(여유)\':h<15?\'피크 - 푸드·공연 집중(혼잡)\':h<18?\'오후 - 체험·휴게 분산\':\'폐장 전 - 공연 집중 및 퇴장\'; }\nfunction pickZone(){\n  const Zs=Z(); let tot=0; const w=Zs.map(z=>{const a=(z.type===\'medical\')?0:z.attract*(z.type===\'stage\'&&tHour>=18?1.5:1)*(z.type===\'food\'&&tHour>=12&&tHour<15?1.5:1);tot+=a;return a});\n  let r=Math.random()*tot; for(let i=0;i<Zs.length;i++){ r-=w[i]; if(r<=0) return i; } return 0;\n}\nfunction spawn(a){\n  const g=D.gates[Math.floor(Math.random()*D.gates.length)];\n  let sx=g.x,sy=g.y; for(let k=0;k<12;k++){ const tx=g.x+(Math.random()-.5)*6, ty=g.y+(Math.random()-.5)*6; if(insideShape(tx,ty)){sx=tx;sy=ty;break;} } a.x=sx; a.y=sy; a.leaving=false; a.dwell=0; a.zone=pickZone(); setTarget(a);\n}\nfunction setTarget(a){\n  const z=Z()[a.zone]; a.tx=z.x-1.5+Math.random()*(z.w+3); a.ty=z.y-1.5+Math.random()*(z.h+3);\n  a.sp=.28+Math.random()*.2;\n}\nfunction initAgents(){\n  agents=[]; for(let i=0;i<NAG;i++){ const a={}; spawn(a); const t=Math.random(); a.x=a.x+(a.tx-a.x)*t; a.y=a.y+(a.ty-a.y)*t; a.active=i<NAG*factor(tHour); agents.push(a);}\n  raindrops=[]; for(let i=0;i<110;i++) raindrops.push({x:Math.random()*W,y:Math.random()*H,l:7+Math.random()*10,v:6+Math.random()*6});\n}\nfunction step(dt){\n  const f=factor(tHour); const n=Math.floor(NAG*f);\n  agents.forEach((a,i)=>{ a.active=i<n&&!a.evacuated; if(!a.active) return;\n    if(a.dwell>0){ a.dwell-=dt; a.x+=(Math.random()-.5)*.06; a.y+=(Math.random()-.5)*.06;\n      if(a.dwell<=0){ if(Math.random()<.35){ a.leaving=true; const g=D.gates[Math.floor(Math.random()*D.gates.length)]; a.tx=g.x; a.ty=g.y; } else { a.zone=pickZone(); setTarget(a);} } return; }\n    let dx=a.tx-a.x, dy=a.ty-a.y, d=Math.hypot(dx,dy);\n    let sp=a.sp*crowdSpeed*(rain?1.6:1);\n    if(rain&&!a.leaving){ const st=Z().find(z=>z.type===\'stage\'); if(st){a.tx=st.x+st.w/2; a.ty=st.y+st.h/2+st.h*.7; dx=a.tx-a.x; dy=a.ty-a.y; d=Math.hypot(dx,dy);} }\n    if(emg){ const ex=a.x-emg.x, ey=a.y-emg.y, ed=Math.hypot(ex,ey); if(ed<9&&ed>0){ a.x+=ex/ed*.5; a.y+=ey/ed*.5; } }\n    if(d<1.2){ if(a.leaving){ if(evacuating){a.evacuated=true;a.active=false}else spawn(a);} else { a.dwell=3+Math.random()*9; } }\n    else { mv(a,a.x+dx/d*sp,a.y+dy/d*sp); }\n  });\n  for(let i=0;i<agents.length;i+=2){ const a=agents[i]; if(!a.active) continue; const b=agents[(i*7+3)%agents.length]; if(!b.active) continue;\n    const dx=a.x-b.x, dy=a.y-b.y, d=Math.hypot(dx,dy); if(d>0&&d<1.2){ a.x+=dx/d*.1; a.y+=dy/d*.1; } }\n  if(emg){ const meds=Z().filter(z=>z.type===\'medical\'); let best=null,bd=1e9;\n    meds.forEach(m=>{const d=Math.hypot(m.x+m.w/2-emg.x,m.y+m.h/2-emg.y); if(d<bd){bd=d;best=m;}});\n    emg.target=best;\n    if(best&&bd>1.5){ emg.x+=(best.x+best.w/2-emg.x)/bd*.9*ambulanceSpeed; emg.y+=(best.y+best.h/2-emg.y)/bd*.9*ambulanceSpeed;\n      $(\'status\').textContent=\'🚑 응급 이송 중… 의료센터까지 \'+(bd*mpu).toFixed(0)+\'m\';\n    } else if(best){ $(\'status\').textContent=\'✅ 의료센터 도착 · 이송 소요 \'+Math.round((performance.now()-emg.t0)/1000)+\'초(시뮬레이션)\'; } }\n  raindrops.forEach(r=>{r.y+=r.v;r.x-=1;if(r.y>H){r.y=0;r.x=Math.random()*W}});\n}\nfunction updateHeat(){\n  const n=Math.floor(NAG*factor(tHour)); const per=D.params.visitors*.5/Math.max(1,n)*factor(tHour);\n  const g=new Float32Array(GX*GY);\n  agents.forEach(a=>{ if(!a.active) return; const ix=Math.min(GX-1,Math.max(0,Math.floor(a.x/(WW/GX)))), iy=Math.min(GY-1,Math.max(0,Math.floor(a.y/(WH/GY)))); g[iy*GX+ix]+=per; });\n  const o=new Float32Array(GX*GY);\n  for(let y=0;y<GY;y++)for(let x=0;x<GX;x++){ let s=0,c=0; for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const xx=x+i,yy=y+j; if(xx>=0&&xx<GX&&yy>=0&&yy<GY){const w=(i==0&&j==0)?2:1; s+=g[yy*GX+xx]*w; c+=w;}} o[y*GX+x]=s/c/cellArea; }\n  for(let k=0;k<o.length;k++) heat[k]=heat[k]*.85+o[k]*.15;\n}\nfunction heatColor(d){ if(d<.12) return null; if(d<.25) return \'rgba(16,185,129,.5)\'; if(d<.5) return \'rgba(234,179,8,.65)\'; if(d<.9) return \'rgba(249,115,22,.75)\'; return \'rgba(239,68,68,.88)\'; }\nfunction drawHeat(ctx,w,h,bg){\n  ctx.clearRect(0,0,w,h);\n  if(bg){ ctx.fillStyle=\'#020617\'; ctx.fillRect(0,0,w,h); ctx.save(); outlinePath(ctx,w/WW,h/WH); ctx.fillStyle=\'#0f172a\'; ctx.fill(); ctx.restore(); }\n  const cw=w/GX, ch=h/GY; let peak=0,hot=0,act=0;\n  ctx.save(); outlinePath(ctx,w/WW,h/WH); ctx.clip();\n  for(let y=0;y<GY;y++)for(let x=0;x<GX;x++){ const d=heat[y*GX+x]; peak=Math.max(peak,d); if(d>=.12) act++; if(d>=.5) hot++; const c=heatColor(d); if(c){ ctx.fillStyle=c; ctx.fillRect(x*cw,y*ch,cw+.5,ch+.5);} }\n  ctx.restore();\n  if(bg){ outlinePath(ctx,w/WW,h/WH); ctx.strokeStyle=\'#94a3b8\'; ctx.lineWidth=2; ctx.stroke();\n    Z().forEach(z=>{ ctx.strokeStyle=\'rgba(255,255,255,.45)\'; ctx.lineWidth=1; ctx.strokeRect(z.x*w/WW,z.y*h/WH,z.w*w/WW,z.h*h/WH);\n      ctx.fillStyle=\'rgba(255,255,255,.85)\'; ctx.font=\'bold 10px Pretendard,sans-serif\'; ctx.textAlign=\'center\'; ctx.fillText(z.name,(z.x+z.w/2)*w/WW,(z.y+z.h/2)*h/WH+3,z.w*w/WW); }); }\n  return [peak,hot,act];\n}\n/* ---------- 2D 평면도 ---------- */\nfunction drawBase(){\n  const T=D.theme; cx.clearRect(0,0,W,H);\n  cx.fillStyle=\'#334155\'; cx.fillRect(0,0,W,H);\n  cx.save(); outlinePath(cx,S,S); cx.clip();\n  cx.fillStyle=rain?T.groundRain:T.ground; cx.fillRect(0,0,W,H);\n  if(T.kind===\'outdoor\'&&!D.shape.dome){ cx.fillStyle=\'rgba(0,0,0,.14)\'; pieces(9).forEach(pc=>{ const t=treePos(pc); cx.beginPath(); cx.arc(t[0]*S,t[1]*S,11,0,7); cx.fill(); }); }\n  else { cx.strokeStyle=\'rgba(0,0,0,.12)\'; cx.lineWidth=1; for(let x=0;x<W;x+=W/16){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,H);cx.stroke();} for(let y=0;y<H;y+=H/10){cx.beginPath();cx.moveTo(0,y);cx.lineTo(W,y);cx.stroke();} }\n  cx.restore();\n  outlinePath(cx,S,S); cx.strokeStyle=\'#f8fafc\'; cx.lineWidth=D.shape.dome?3:5; cx.stroke();\n  if(D.shape.dome){ cx.save(); cx.setLineDash([8,6]); cx.strokeStyle=\'rgba(255,255,255,.55)\'; cx.lineWidth=1.5; cx.beginPath(); cx.ellipse(SHC[0]*S,SHC[1]*S,(SHB[2]-SHB[0])/2*S*.94,(SHB[3]-SHB[1])/2*S*.94,0,0,7); cx.stroke(); cx.restore(); }\n  cx.strokeStyle=T.path; cx.globalAlpha=.6; cx.lineCap=\'round\'; cx.lineWidth=Math.max(4,S*1.6);\n  Z().forEach(z=>{ const g=nearestGate(z); cx.beginPath(); cx.moveTo(g.x*S,g.y*S); cx.lineTo((z.x+z.w/2)*S,(z.y+z.h/2)*S); cx.stroke(); });\n  cx.globalAlpha=1;\n  Z().forEach(z=>{ const x=z.x*S,y=z.y*S,w=z.w*S,h=z.h*S;\n    cx.fillStyle=\'rgba(0,0,0,.28)\'; cx.fillRect(x+3,y+3,w,h);\n    cx.fillStyle=z.color; cx.beginPath(); cx.roundRect(x,y,w,h,7); cx.fill(); cx.strokeStyle=\'#fff\'; cx.lineWidth=2; cx.stroke();\n    cx.textAlign=\'center\'; cx.fillStyle=\'#fff\';\n    cx.font=Math.max(14,Math.min(26,h*.4))+\'px sans-serif\'; cx.fillText(z.icon,x+w/2,y+h/2-2);\n    cx.font=\'bold \'+Math.max(11,Math.min(15,w/6.5))+\'px Pretendard,sans-serif\'; cx.shadowColor=\'rgba(0,0,0,.6)\'; cx.shadowBlur=3;\n    cx.fillText(z.name,x+w/2,y+h/2+Math.max(14,Math.min(20,h*.28)),w-6); cx.shadowBlur=0; });\n  D.gates.forEach(g=>{ cx.fillStyle=\'#1e293b\'; cx.beginPath(); cx.arc(g.x*S,g.y*S,10,0,7); cx.fill(); cx.strokeStyle=\'#fff\'; cx.lineWidth=2; cx.stroke();\n    cx.fillStyle=\'#fff\'; cx.font=\'12px sans-serif\'; cx.textAlign=\'center\'; cx.fillText(\'🚪\',g.x*S,g.y*S+4);\n    const up=g.y>SHC[1]; cx.font=\'bold 11px Pretendard\'; cx.fillStyle=\'#fff\'; cx.shadowColor=\'#000\'; cx.shadowBlur=3; cx.fillText(g.name,g.x*S,g.y*S+(up?-15:24)); cx.shadowBlur=0; });\n}\nfunction nearestGate(z){ let b=D.gates[0],bd=1e9; D.gates.forEach(g=>{const d=Math.hypot(g.x-(z.x+z.w/2),g.y-(z.y+z.h/2)); if(d<bd){bd=d;b=g;}}); return b; }\nfunction drawPeople(){ px.clearRect(0,0,W,H); if(!peopleOn)return;\n  agents.forEach(a=>{ if(!a.active) return; px.fillStyle=rain?\'#93c5fd\':\'#fff\'; px.strokeStyle=\'rgba(0,0,0,.4)\'; px.lineWidth=.8; px.beginPath(); px.arc(a.x*S,a.y*S,3.2,0,7); px.fill(); px.stroke(); });\n  if(emg){ px.strokeStyle=\'#ef4444\'; px.lineWidth=3; px.setLineDash([6,5]);\n    if(emg.target){ px.beginPath(); px.moveTo(emg.x*S,emg.y*S); px.lineTo((emg.target.x+emg.target.w/2)*S,(emg.target.y+emg.target.h/2)*S); px.stroke(); }\n    px.setLineDash([]); px.fillStyle=\'#ef4444\'; px.beginPath(); px.arc(emg.x*S,emg.y*S,9+Math.sin(performance.now()/120)*2,0,7); px.fill();\n    px.fillStyle=\'#fff\'; px.font=\'bold 12px Pretendard\'; px.textAlign=\'center\'; px.fillText(\'🚑 응급\',emg.x*S,emg.y*S-14); }\n  if(rain){ px.strokeStyle=\'rgba(147,197,253,.55)\'; px.lineWidth=1.1; raindrops.forEach(r=>{px.beginPath();px.moveTo(r.x,r.y);px.lineTo(r.x-2,r.y+r.l);px.stroke();}); }\n}\n// 3D selection and editing: ground-plane ray projection, independent of camera orbit.\nlet peopleOn=true,crowdSpeed=.5,ambulanceSpeed=.4,evacuating=false,whitePaths=false;\nfunction evacuatePeople(){evacuating=true;sim=true;agents.forEach(a=>{a.evacuated=false;a.dwell=0;a.leaving=true;let gate=D.gates.reduce((b,g)=>Math.hypot(g.x-a.x,g.y-a.y)<Math.hypot(b.x-a.x,b.y-a.y)?g:b,D.gates[0]);a.tx=gate.x;a.ty=gate.y});editNote("직선 이동 기반 탈출 시뮬레이션입니다. 실제 대피시간·장애물 회피 검증이 아닙니다.")}\nlet editing=false, selectedId=null, editDrag=null, editUndo=[], editDirty=false, selectionGroup=null, routeGroup=null;\nconst ray3=new THREE.Raycaster(), ground3=new THREE.Plane(new THREE.Vector3(0,1,0),0);\nfunction setRay(ev){const r=R3.domElement.getBoundingClientRect();ray3.setFromCamera(new THREE.Vector2((ev.clientX-r.left)/r.width*2-1,-(ev.clientY-r.top)/r.height*2+1),C3)}\nfunction groundPoint(ev){setRay(ev);return ray3.ray.intersectPlane(ground3,new THREE.Vector3())}\nfunction editNote(text){$(\'editStatus\').textContent=text}\nfunction toggleEdit(){editing=!editing;setView(true);if(editing){setMode(\'after\');sim=false;$(\'bPlay\').textContent=\'▶ 시뮬레이션 시작\';domeOn=false;domeMeshes.forEach(m=>m.visible=false)}$(\'editToggle\').textContent=\'✋ 3D 편집 모드 \'+(editing?\'ON\':\'OFF\');$(\'editToggle\').className=editing?\'on\':\'\';$(\'hint\').textContent=editing?\'부스: 이동 · 노란 손잡이: 크기 · 빈 곳: 회전\':\'드래그: 회전 · 휠: 확대/축소\';editNote(editing?\'부스를 클릭하거나 드래그하세요.\':\'시점 회전 모드\');refreshSelection()}\nfunction selectedZone(){return D.zones.find(z=>z.id===selectedId)}\nfunction disposeGroup(g){if(!g)return;S3.remove(g);g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose()})}\nfunction refreshSelection(){if(!S3)return;disposeGroup(selectionGroup);selectionGroup=null;const z=selectedZone();if(!z||!editing||mode!==\'after\')return;selectionGroup=new THREE.Group();S3.add(selectionGroup);const points=[[z.x,z.y],[z.x+z.w,z.y],[z.x+z.w,z.y+z.h],[z.x,z.y+z.h],[z.x,z.y]].map(p=>new THREE.Vector3(p[0]-80,.8,p[1]-50));selectionGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:0xfbbf24,depthTest:false})));const knob=new THREE.Mesh(new THREE.BoxGeometry(2.6,2.6,2.6),new THREE.MeshBasicMaterial({color:0xfbbf24,depthTest:false}));knob.position.set(z.x+z.w-80,2,z.y+z.h-50);knob.userData.resize=true;knob.renderOrder=99;selectionGroup.add(knob);editNote(z.name+\' · \'+(z.w*mpu/1.35).toFixed(2)+\' × \'+(z.h*mpu/1.35).toFixed(2)+\'m · 未저장 변경은 저장 버튼으로 반영\'.replace(\'未\',\'미\'))}\nfunction pointerDown3(ev){if(ev.button!==0)return;R3.domElement.setPointerCapture(ev.pointerId);setRay(ev);if(editing&&mode===\'after\'){\n if(selectionGroup&&ray3.intersectObjects(selectionGroup.children,true).some(h=>h.object.userData.resize)){const p=groundPoint(ev);if(p){editUndo.push(JSON.stringify(D.zones));editDrag={kind:\'resize\',point:p,zone:{...selectedZone()}};return}}\n const hits=ray3.intersectObjects(G3.children,true);let id=null;for(const hit of hits){let o=hit.object;while(o&&o!==G3){if(o.userData.zoneId!==undefined){id=o.userData.zoneId;break}o=o.parent}if(id!==null)break}\n selectedId=id;refreshSelection();if(id!==null){const p=groundPoint(ev);if(p){editUndo.push(JSON.stringify(D.zones));editDrag={kind:\'move\',point:p,zone:{...selectedZone()}};return}}\n }drag=true;lx=ev.clientX;ly=ev.clientY}\nfunction pointerMove3(ev){if(editDrag){const p=groundPoint(ev),z=selectedZone();if(!p||!z)return;const dx=p.x-editDrag.point.x,dy=p.z-editDrag.point.z,old=editDrag.zone;if(editDrag.kind===\'move\'){z.x=Math.max(0,Math.min(160-z.w,old.x+dx));z.y=Math.max(0,Math.min(100-z.h,old.y+dy))}else{z.w=Math.max(1,Math.min(150,160-z.x,old.w+dx));z.h=Math.max(1,Math.min(95,100-z.y,old.h+dy))}editDirty=true;buildScene3();drawBase();return}if(drag){yaw-=(ev.clientX-lx)*.008;pitch=Math.min(1.35,Math.max(.3,pitch+(ev.clientY-ly)*.006));lx=ev.clientX;ly=ev.clientY}}\nfunction deleteSelected(){if(!editing||mode!==\'after\'||!selectedZone()){editNote(\'편집 모드에서 삭제할 시설을 선택하세요.\');return}const z=selectedZone();if(z.type===\'medical\'&&D.zones.filter(q=>q.type===\'medical\').length===1){editNote(\'마지막 응급의료센터는 삭제할 수 없습니다.\');return}if(D.zones.length<=2){editNote(\'시설은 최소 2개 필요합니다.\');return}editUndo.push(JSON.stringify(D.zones));D.zones=D.zones.filter(z=>z.id!==selectedId);selectedId=null;editDirty=true;emg=null;initAgents();buildScene3();drawBase();editNote(\'삭제했습니다. 저장 버튼을 눌러 반영하세요.\')}\nfunction undoEdit(){if(!editUndo.length)return;D.zones=JSON.parse(editUndo.pop());selectedId=null;editDirty=true;emg=null;initAgents();buildScene3();drawBase();editNote(\'이전 조작으로 되돌렸습니다. 저장 후 반영됩니다.\')}\nfunction save3Edit(){if(mode!==\'after\'){editNote(\'설계 후 배치에서만 저장할 수 있습니다.\');return}parent.postMessage({type:\'event:save\',zones:D.zones},\'*\');editNote(\'저장 요청 중입니다. 충돌·외곽 침범 시 앱에 오류가 표시됩니다.\')}\nfunction isProp(n){return /책상|테이블|의자|파라솔|천막|알림막|깃발|연단|가림막|전광판|키오스크|쓰레기|분리수거/.test(n)}\nfunction buildProp(g,z,w,h){const n=z.name,c=z.color;\n if(/책상|테이블/.test(n)){bx(g,w*.9,.45,h*.85,c,0,2.7,0);[-1,1].forEach(a=>[-1,1].forEach(b=>bx(g,.35,2.5,.35,\'#64748b\',a*w*.35,1.25,b*h*.3)));}\n else if(/의자/.test(n)){bx(g,w*.7,.4,h*.65,c,0,1.5,0);bx(g,w*.7,2,.35,c,0,2.3,-h*.3);[-1,1].forEach(a=>[-1,1].forEach(b=>bx(g,.3,1.5,.3,\'#64748b\',a*w*.28,.75,b*h*.25)));}\n else if(/파라솔/.test(n)){cyl(g,.16,.16,5,\'#64748b\',0,2.5,0);const roof=new THREE.Mesh(new THREE.ConeGeometry(1,1.5,16),M(c));roof.scale.set(w*.5,1,h*.5);roof.position.y=5;g.add(roof)}\n else if(/쓰레기|분리수거/.test(n)){cyl(g,w*.35,w*.3,3,c,0,1.5,0);cyl(g,w*.4,w*.4,.4,\'#334155\',0,3.1,0)}\n else if(/연단/.test(n)){bx(g,w*.9,2,h*.9,c,0,1,0)}\n else if(/천막/.test(n)){[-1,1].forEach(a=>[-1,1].forEach(b=>cyl(g,.16,.16,5,\'#64748b\',a*w*.4,2.5,b*h*.4)));bx(g,w,1,h,c,0,5,0)}\n else{bx(g,.4,5,.4,\'#475569\',0,2.5,0);bx(g,w*.85,3,Math.max(.3,h*.15),/전광판|키오스크/.test(n)?\'#0f172a\':c,0,4,0)}\n}\n// Grid BFS: indicative routes only, not a certified evacuation/accessibility design.\nfunction clearRoutes(){if(routeGroup){disposeGroup(routeGroup);routeGroup=null}}\nfunction showRoute(kind){if(!R3||mode!==\'after\'){editNote(\'설계 후 3D 화면에서 경로를 표시하세요.\');return}clearRoutes();routeGroup=new THREE.Group();S3.add(routeGroup);const step=2,nx=80,ny=50,key=(x,y)=>y*nx+x;\n const free=(x,y)=>x>=0&&x<nx&&y>=0&&y<ny&&insideShape(x*step+1,y*step+1)&&!D.zones.some(z=>x*step+1>=z.x-1&&x*step+1<=z.x+z.w+1&&y*step+1>=z.y-1&&y*step+1<=z.y+z.h+1);\n const near=(x,y)=>{let best=null,d=Infinity;for(let yy=0;yy<ny;yy++)for(let xx=0;xx<nx;xx++)if(free(xx,yy)){let dd=(xx*step+1-x)**2+(yy*step+1-y)**2;if(dd<d){d=dd;best=[xx,yy]}}return best};\n const route=(start,goal)=>{if(!start||!goal)return null;const q=[start],prev=new Map([[key(...start),null]]);let found=null;for(let i=0;i<q.length;i++){let [x,y]=q[i];if(x===goal[0]&&y===goal[1]){found=[x,y];break}for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){let a=x+dx,b=y+dy,k=key(a,b);if(free(a,b)&&!prev.has(k)){prev.set(k,[x,y]);q.push([a,b])}}}if(!found)return null;let points=[];while(found){points.push(new THREE.Vector3(found[0]*step+1-80,1.1,found[1]*step+1-50));found=prev.get(key(...found))}return points};\n let shown=0,failed=0;const targets=kind===\'accessible\'?D.zones.filter(z=>/사회적|화장실|의료|응급|무대|공연|안내/.test(z.name)):D.zones;\n for(const z of targets){let start=near(z.x+z.w/2,z.y+z.h+3),best=null;const gates=kind===\'accessible\'?D.gates.slice(0,1):D.gates;for(const g of gates){const pts=route(start,near(g.x,g.y));if(pts&&(!best||pts.length<best.length))best=pts}if(best){routeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(best),new THREE.LineBasicMaterial({color:kind===\'accessible\'?0x2563eb:0x16a34a,depthTest:false})));shown++}else failed++}\n editNote((kind===\'accessible\'?\'사회적 약자 이동경로 후보\':\'비상 대피로 후보\')+\' \'+shown+\'개 · 탐색 실패 \'+failed+\'개. 격자 기반 참고 경로이며 통로 폭·경사·단차·출입문 유효폭은 검증하지 않았습니다.\');\n}\n\n/* ---------- 3D 아이소메트릭 ---------- */\nlet R3=null,S3,C3,G3,bodyM,headM,rainPts,emgGrp,emgLine,heatPlane,heatTex;\nlet yaw=.55,pitch=.72,zoom3=1.45*Math.min(1.45,WW/Math.max(D.shape.bbox[2]-D.shape.bbox[0],(D.shape.bbox[3]-D.shape.bbox[1])*1.3))*(D.shape.dome?.82:1),drag=false,lx=0,ly=0;\nconst DUM=new THREE.Object3D();\nfunction M(c,o){return new THREE.MeshLambertMaterial(Object.assign({color:new THREE.Color(c)},o||{}));}\nfunction bx(p,w,h,d,c,x,y,z,o){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),M(c,o));m.position.set(x,y,z);p.add(m);return m;}\nfunction cyl(p,rt,rb,h,c,x,y,z,seg){const m=new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,h,seg||12),M(c));m.position.set(x,y,z);p.add(m);return m;}\nfunction cone(p,r,h,c,x,y,z,seg){const m=new THREE.Mesh(new THREE.ConeGeometry(r,h,seg||8),M(c));m.position.set(x,y,z);p.add(m);return m;}\nfunction tree(p,x,z){cyl(p,.5,.6,2.4,\'#7c4a21\',x,1.4,z,8);cone(p,2.3,4.6,\'#2f855a\',x,4.8,z,8);}\nfunction seats(p,rows,cols,x0,z0,dx,dz,c){const im=new THREE.InstancedMesh(new THREE.BoxGeometry(1.2,1,1.2),M(c),rows*cols);let k=0;\n  for(let r=0;r<rows;r++)for(let q=0;q<cols;q++){DUM.position.set(x0+q*dx,.9,z0+r*dz);DUM.scale.set(1,1,1);DUM.rotation.set(0,0,0);DUM.updateMatrix();im.setMatrixAt(k++,DUM.matrix);} p.add(im);}\nfunction labelSprite(text,color){\n  const c=document.createElement(\'canvas\'); c.width=640; c.height=150; const t=c.getContext(\'2d\');\n  t.fillStyle=\'rgba(255,255,255,.96)\'; t.beginPath(); t.roundRect(4,4,632,142,28); t.fill();\n  t.fillStyle=color; t.beginPath(); t.roundRect(4,4,30,142,14); t.fill();\n  t.strokeStyle=\'rgba(15,23,42,.25)\'; t.lineWidth=3; t.beginPath(); t.roundRect(4,4,632,142,28); t.stroke();\n  t.fillStyle=\'#0f172a\'; t.font=\'bold 66px Pretendard,sans-serif\'; t.textAlign=\'center\'; t.textBaseline=\'middle\'; t.fillText(text,340,78,570);\n  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true})); sp.renderOrder=10; return sp;\n}\nfunction buildZone3(z){\n  const g=new THREE.Group(); const cxz=z.x+z.w/2-WW/2, czz=z.y+z.h/2-WH/2; g.position.set(cxz,0,czz); G3.add(g); g.userData.zoneId=z.id;\n  const w=z.w,h=z.h; const pale=new THREE.Color(z.color).lerp(new THREE.Color(\'#ffffff\'),.65).getStyle();\n  if(z.shape && z.shape!==\'rect\'){\n    let pts=[]; if(z.shape===\'ellipse\'){for(let i=0;i<64;i++){let t=i*Math.PI*2/64;pts.push([Math.cos(t)*w/2,Math.sin(t)*h/2]);}}\n    else {pts=[[-w/2,-h/2],[w*.05,-h/2],[w*.05,-h*.05],[w/2,-h*.05],[w/2,h/2],[-w/2,h/2]];}\n    const sh=new THREE.Shape();pts.forEach((p,i)=>i?sh.lineTo(p[0],p[1]):sh.moveTo(p[0],p[1]));sh.closePath();\n    const mesh=new THREE.Mesh(new THREE.ExtrudeGeometry(sh,{depth:z.type===\'stage\'?3:.8,bevelEnabled:false}),M(z.color));mesh.rotation.x=-Math.PI/2;g.add(mesh);\n  } else bx(g,w,.5,h,pale,0,.25,0);\n  let top=8;\n  switch(z.shape && z.shape!==\'rect\' ? \'__shaped\' : (z.type===\'custom\'&&isProp(z.name)?\'__prop\':z.type)){\n    case \'__prop\': {buildProp(g,z,w,h);top=8;break;}\n    case \'__shaped\': {top=6;break;}\n    case \'stage\':{ const s=(czz<0)?1:-1;\n      bx(g,w*.96,3,h*.42,\'#7c3aed\',0,2,-s*h*.28); bx(g,w*.96,.4,h*.42,\'#ddd6fe\',0,3.7,-s*h*.28);\n      bx(g,w*.92,z.ht,.9,\'#312e81\',0,3.5+z.ht/2,-s*h*.48,{emissive:new THREE.Color(\'#4338ca\')});\n      [-1,1].forEach(k=>bx(g,1.2,z.ht+1.5,1.2,\'#1e1b4b\',k*w*.46,(z.ht+1.5)/2+3.5,-s*h*.48));\n      const rows=Math.max(1,Math.floor((h*.5-2.2)/1.9)+1), cols=Math.max(3,Math.floor((w-3)/1.9));\n      seats(g,rows,cols,-(cols-1)*.95,s*1.4,1.9,s*1.9,\'#1e3a8a\'); top=z.ht+6; break; }\n    case \'food\':{\n      bx(g,w*.9,3,2,\'#92400e\',0,2,-h*.33);\n      const n=Math.max(3,Math.round(w/3)); for(let i=0;i<n;i++) bx(g,w*.95/n,.5,h*.42,(i%2?\'#ffffff\':z.color),-w*.475+(i+.5)*w*.95/n,6.4,-h*.28);\n      [-1,1].forEach(k=>{cyl(g,.25,.25,5.8,\'#475569\',k*w*.46,3.3,-h*.48,8);cyl(g,.25,.25,5.8,\'#475569\',k*w*.46,3.3,-h*.08,8);});\n      [-1,0,1].forEach(t=>{const x=t*w*.28; cyl(g,1.5,1.5,.3,\'#ffffff\',x,2,h*.2,16); cyl(g,.3,.3,1.6,\'#64748b\',x,1.2,h*.2,8); cyl(g,.6,.6,.8,z.color,x-2.2,1,h*.2,10); cyl(g,.6,.6,.8,z.color,x+2.2,1,h*.2,10);});\n      top=8; break; }\n    case \'rest\':{\n      bx(g,w*.96,.5,h*.96,\'#4fa15a\',0,.5,0); bx(g,w*.4,1,1.3,\'#a16207\',-w*.2,1.3,h*.12); bx(g,w*.4,1,1.3,\'#a16207\',w*.2,1.3,-h*.12);\n      tree(g,-w*.4,-h*.3); tree(g,w*.4,h*.3); tree(g,w*.38,-h*.36); top=9; break; }\n    case \'medical\':{\n      bx(g,w*.8,5,h*.7,\'#ffffff\',0,3,0); bx(g,w*.82,1,h*.72+.1,\'#ef4444\',0,2.4,0); bx(g,w*.84,.8,h*.74,\'#f1f5f9\',0,5.8,0);\n      bx(g,4.2,.3,1.3,\'#ef4444\',0,6.4,0); bx(g,1.3,.3,4.2,\'#ef4444\',0,6.4,0); top=8.5; break; }\n    case \'info\':{\n      bx(g,w*.6,3,h*.5,\'#0ea5e9\',0,2,0); bx(g,w*.85,.5,h*.75,\'#e0f2fe\',0,3.8,0); cyl(g,.2,.2,4.5,\'#334155\',w*.36,2.8,h*.3,8); cyl(g,1.1,1.1,.4,\'#0ea5e9\',w*.36,5.2,h*.3,16); top=7.5; break; }\n    case \'restroom\':{\n      bx(g,w*.8,4,h*.7,\'#e2e8f0\',0,2.5,0); bx(g,w*.86,.6,h*.76,\'#06b6d4\',0,4.8,0);\n      bx(g,1.4,2.4,.2,\'#0f172a\',-w*.15,1.7,h*.36); bx(g,1.4,2.4,.2,\'#0f172a\',w*.15,1.7,h*.36); top=7; break; }\n    default:{ /* booth, custom : 텐트 */\n      const px_=w*.38,pz=h*.38; [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(a=>cyl(g,.25,.25,4.8,\'#475569\',a[0]*px_,2.9,a[1]*pz,8));\n      const roof=new THREE.Mesh(new THREE.ConeGeometry(1,3.4,4),M(z.color)); roof.rotation.y=Math.PI/4; roof.scale.set(w*.72,1,h*.72); roof.position.set(0,6.7,0); g.add(roof);\n      bx(g,w*.5,1.6,h*.22,\'#f8fafc\',0,1.4,h*.15); [-1,0,1].forEach(k=>bx(g,1.4,1,1.4,z.color,k*w*.16,2.7,h*.15)); top=9.5; }\n  }\n  const sp=labelSprite(z.icon+\' \'+z.name,z.color); const ww=Math.min(30,Math.max(14,z.name.length*2.1+8)); sp.scale.set(ww,ww*150/640,1); sp.position.set(0,top+3,0); g.add(sp);\n}\nfunction shapeGeo(scale){ const sh=new THREE.Shape(); D.shape.outline.forEach((p,i)=>{ const x=(p[0]-WW/2)*scale, y=-(p[1]-WH/2)*scale; if(i) sh.lineTo(x,y); else sh.moveTo(x,y); }); sh.closePath(); return sh; }\nfunction slab(depth,color,y,scale){ const m=new THREE.Mesh(new THREE.ExtrudeGeometry(shapeGeo(scale),{depth:depth,bevelEnabled:false}),M(color)); m.rotation.x=-Math.PI/2; m.position.y=y; G3.add(m); return m; }\nlet domeMeshes=[], domeOn=true;\nfunction buildScene3(){\n  clearRoutes();\n  if(G3){ S3.remove(G3); G3.traverse(o=>{if(o.geometry)o.geometry.dispose(); if(o.material){const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>{if(m.map)m.map.dispose();m.dispose()})}}); } G3=new THREE.Group(); S3.add(G3);\n  const T=D.theme, dome=D.shape.dome; const ground=rain?T.groundRain:T.ground;\n  slab(4,\'#e5e7eb\',-4.7,1.04); slab(.7,ground,-.7,1);\n  if(T.kind===\'outdoor\'&&!dome){ pieces(9).forEach((pc,i)=>{ if(i%2) return; const t=treePos(pc); tree(G3,t[0]-WW/2,t[1]-WH/2); }); }\n  const hh=dome?2.4:5;\n  pieces(5).forEach(pc=>{ if(D.gates.some(g=>Math.hypot(g.x-pc.x,g.y-pc.y)<7.5)) return; const m=bx(G3,pc.len+.3,hh,1.4,\'#f8fafc\',pc.x-WW/2,hh/2,pc.y-WH/2); m.rotation.y=-pc.ang; });\n  const pcol=T.path;\n  if(whitePaths) Z().forEach(z=>{ const g=nearestGate(z); const x1=g.x-WW/2,z1=g.y-WH/2,x2=z.x+z.w/2-WW/2,z2=z.y+z.h/2-WH/2; const dx=x2-x1,dz=z2-z1,L=Math.hypot(dx,dz);\n    const m=bx(G3,L,.3,3.2,pcol,(x1+x2)/2,.15,(z1+z2)/2); m.rotation.y=-Math.atan2(dz,dx); });\n  D.gates.forEach(g=>{ const gg=new THREE.Group(); gg.position.set(g.x-WW/2,0,g.y-WH/2); gg.rotation.y=-g.ang; G3.add(gg);\n    bx(gg,1.6,8,1.6,\'#1e293b\',-6,4,0); bx(gg,1.6,8,1.6,\'#1e293b\',6,4,0); bx(gg,14,1.4,1.8,\'#1e293b\',0,8,0);\n    const sp=labelSprite(\'🚪 \'+g.name,\'#1e293b\'); sp.scale.set(15,15*150/640,1); sp.position.set(g.x-WW/2,12,g.y-WH/2); G3.add(sp); });\n  Z().forEach(buildZone3);\n  domeMeshes=[];\n  if(dome){ const bw=SHB[2]-SHB[0], bh=SHB[3]-SHB[1];\n    const dm=new THREE.Mesh(new THREE.SphereGeometry(1,48,20,0,Math.PI*2,0,Math.PI/2),new THREE.MeshLambertMaterial({color:0xbfdbfe,transparent:true,opacity:.14,side:THREE.DoubleSide,depthWrite:false}));\n    dm.scale.set(bw/2,bw/2*.6,bh/2); dm.renderOrder=1; G3.add(dm);\n    const wf=new THREE.Mesh(new THREE.SphereGeometry(1,16,6,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x475569,wireframe:true,transparent:true,opacity:.16,depthWrite:false}));\n    wf.scale.copy(dm.scale); wf.renderOrder=1; G3.add(wf); domeMeshes=[dm,wf]; domeMeshes.forEach(m=>m.visible=domeOn); }\n  refreshSelection();\n  $(\'zlist\').replaceChildren(...Z().map(z=>{const el=document.createElement(\'span\');el.style.setProperty(\'--c\',z.color);el.textContent=z.icon+\' \'+z.name;return el})); $(\'zCnt\').textContent=\'(\'+Z().length+\'개)\';\n}\nfunction initR3(){\n  const el=$(\'c3\'); try{ R3=new THREE.WebGLRenderer({antialias:true}); }catch(e){ R3=null; is3d=false; $(\'hint\').textContent=\'이 브라우저는 3D를 지원하지 않아 2D로 표시합니다\'; return; }\n  el.appendChild(R3.domElement);\n  S3=new THREE.Scene(); S3.background=new THREE.Color(\'#dbe8f5\'); S3.add(new THREE.AmbientLight(0xffffff,.82)); const dl=new THREE.DirectionalLight(0xffffff,.65); dl.position.set(-60,120,50); S3.add(dl);\n  C3=new THREE.OrthographicCamera(-1,1,1,-1,-800,1200);\n  const N=NAG; bodyM=new THREE.InstancedMesh(new THREE.CylinderGeometry(.55,.65,2.4,8),M(\'#f97316\'),N); headM=new THREE.InstancedMesh(new THREE.SphereGeometry(.7,10,8),M(\'#fde68a\'),N);\n  bodyM.frustumCulled=false; headM.frustumCulled=false; S3.add(bodyM); S3.add(headM);\n  const rp=new Float32Array(500*3); for(let i=0;i<500;i++){rp[i*3]=(Math.random()-.5)*WW;rp[i*3+1]=Math.random()*60;rp[i*3+2]=(Math.random()-.5)*WH;}\n  rainPts=new THREE.Points(new THREE.BufferGeometry().setAttribute(\'position\',new THREE.BufferAttribute(rp,3)),new THREE.PointsMaterial({color:0x60a5fa,size:1.2})); rainPts.visible=false; rainPts.frustumCulled=false; S3.add(rainPts);\n  emgGrp=new THREE.Mesh(new THREE.SphereGeometry(1.8,16,12),new THREE.MeshBasicMaterial({color:0xef4444})); emgGrp.visible=false; S3.add(emgGrp);\n  emgLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:0xef4444})); emgLine.visible=false; emgLine.frustumCulled=false; S3.add(emgLine);\n  heatTex=new THREE.CanvasTexture(hm); heatPlane=new THREE.Mesh(new THREE.PlaneGeometry(WW,WH),new THREE.MeshBasicMaterial({map:heatTex,transparent:true,opacity:.8,depthWrite:false})); heatPlane.rotation.x=-Math.PI/2; heatPlane.position.y=.5; heatPlane.visible=false; S3.add(heatPlane);\n  const e=R3.domElement;\n  e.style.touchAction=\'none\';\n  e.onpointerdown=pointerDown3;\n  e.onpointermove=pointerMove3;\n  e.onpointerup=e.onpointercancel=()=>{drag=false;editDrag=null};\n  e.addEventListener(\'wheel\',ev=>{ev.preventDefault();zoom3=Math.min(3.2,Math.max(.6,zoom3*(ev.deltaY<0?1.1:.9)));},{passive:false});\n  size3(); buildScene3();\n}\nfunction size3(){ if(!R3) return; const el=$(\'c3\'); const w=el.clientWidth,h=el.clientHeight; R3.setPixelRatio(Math.min(2,window.devicePixelRatio||1)); R3.setSize(w,h); const f=72,asp=w/h; C3.left=-f*asp; C3.right=f*asp; C3.top=f; C3.bottom=-f; C3.updateProjectionMatrix(); }\nfunction render3(){\n  if(!R3) return; const Rr=400;\n  C3.position.set(Math.sin(yaw)*Math.cos(pitch)*Rr,Math.sin(pitch)*Rr,Math.cos(yaw)*Math.cos(pitch)*Rr); C3.lookAt(0,0,0); C3.zoom=zoom3; C3.updateProjectionMatrix();\n  for(let i=0;i<agents.length;i++){ const a=agents[i]; const s=a.active&&peopleOn?1:0.0001; DUM.rotation.set(0,0,0); DUM.scale.set(s,s,s);\n    DUM.position.set(a.x-WW/2,1.7,a.y-WH/2); DUM.updateMatrix(); bodyM.setMatrixAt(i,DUM.matrix); DUM.position.y=3.6; DUM.updateMatrix(); headM.setMatrixAt(i,DUM.matrix); }\n  bodyM.instanceMatrix.needsUpdate=true; headM.instanceMatrix.needsUpdate=true; bodyM.material.color.set(rain?\'#2563eb\':\'#f97316\');\n  rainPts.visible=rain; if(rain){ const p=rainPts.geometry.attributes.position; for(let i=0;i<500;i++){ let y=p.getY(i)-1.4; if(y<0) y=60; p.setY(i,y);} p.needsUpdate=true; }\n  if(emg){ emgGrp.visible=true; emgGrp.position.set(emg.x-WW/2,3,emg.y-WH/2); const sc=1+Math.sin(performance.now()/120)*.25; emgGrp.scale.set(sc,sc,sc);\n    if(emg.target){ emgLine.visible=true; const tp=emgLine.geometry.attributes.position; tp.setXYZ(0,emg.x-WW/2,3,emg.y-WH/2); tp.setXYZ(1,emg.target.x+emg.target.w/2-WW/2,3,emg.target.y+emg.target.h/2-WH/2); tp.needsUpdate=true; } }\n  else { emgGrp.visible=false; emgLine.visible=false; }\n  heatPlane.visible=heat3; if(heat3) heatTex.needsUpdate=true;\n  R3.render(S3,C3);\n}\n/* ---------- 루프 & 컨트롤 ---------- */\nlet last=performance.now(), kt=0;\nfunction loop(now){ const dt=(now-last)/1000; last=now;\n  if(sim){ step(dt); }\n  updateHeat(); const r=drawHeat(hx,W,H,false); drawHeat(h2,W2,H2,true);\n  if(is3d) render3(); else drawPeople();\n  const n=Math.round(D.params.visitors*.5*factor(tHour)); $(\'peopleTxt\').textContent=\'시뮬레이션 군중 ≈ \'+n.toLocaleString()+\'명\';\n  kt+=dt; if(kt>.4){ kt=0; $(\'kPeak\').textContent=r[0].toFixed(2)+\' 명/㎡\'; $(\'kBott\').textContent=(r[2]?Math.round(100*r[1]/r[2]):0)+\'%\';\n    const de=mode===\'after\'?D.detail:D.before_detail; $(\'kMed\').textContent=editDirty?\'저장 후 재계산\':Math.round(de.t_max)+\'초\'; $(\'kRisk\').textContent=editDirty?\'저장 후 재계산\':de.risk_zones+\'개소\'; }\n  requestAnimationFrame(loop);\n}\nfunction setView(v3){ if(v3&&!R3) return; is3d=v3; $(\'c3\').style.display=v3?\'block\':\'none\'; [cv,hm,pp].forEach(c=>c.style.display=v3?\'none\':\'block\');\n  hm.style.display=(!v3&&heat3)?\'block\':\'none\'; $(\'b3d\').className=v3?\'on\':\'\'; $(\'b2d\').className=v3?\'\':\'on\'; $(\'hint\').style.display=v3?\'block\':\'none\'; $(\'bDome\').style.display=(v3&&D.shape.dome)?\'inline-block\':\'none\';\n  if(v3) size3(); }\nfunction togDome(){ domeOn=!domeOn; domeMeshes.forEach(m=>m.visible=domeOn); $(\'bDome\').className=domeOn?\'on\':\'\'; $(\'bDome\').textContent=domeOn?\'🏛️ 지붕 표시\':\'🏛️ 지붕 숨김\'; }\nfunction togHeat3(){ heat3=!heat3; $(\'bHeat3\').className=heat3?\'on\':\'\'; if(!is3d) hm.style.display=heat3?\'block\':\'none\'; }\nfunction setMode(m){ mode=m; $(\'bMode\').className=m===\'after\'?\'on\':\'\'; $(\'bModeB\').className=m===\'before\'?\'on\':\'\';\n  $(\'verTxt\').textContent=m===\'after\'?\'· AI 최적 배치(종합 \'+D.total.toFixed(1)+\'점)\':\'· 설계 전(종합 \'+D.before_total.toFixed(1)+\'점)\';\n  heat.fill(0); initAgents(); emg=null; $(\'bEmg\').className=\'danger\'; $(\'bEmg\').textContent=\'🚨 응급환자 발생\'; drawBase(); if(R3) buildScene3(); $(\'status\').textContent=\'실시간 군중 시뮬레이션\'; }\nfunction togSim(){ sim=!sim; $(\'bPlay\').textContent=sim?\'⏸ 시뮬레이션 정지\':\'▶ 시뮬레이션 시작\'; }\nfunction togRain(){ rain=!rain; const b=$(\'bRain\'); b.className=\'warn\'+(rain?\' on\':\'\'); b.textContent=rain?\'🌧️ 우천(ON)\':\'🌧️ 우천\'; $(\'envTxt\').textContent=rain?\'🌧️ 우천: 무대 쪽으로 대피\':\'일반 상태\';\n  agents.forEach(a=>{ if(!rain&&!a.leaving) setTarget(a); }); drawBase(); if(R3) buildScene3(); }\nfunction togEmg(){ const b=$(\'bEmg\');\n  if(emg){ emg=null; b.className=\'danger\'; b.textContent=\'🚨 응급환자 발생\'; $(\'status\').textContent=\'실시간 군중 시뮬레이션\'; return; }\n  const Zs=Z().filter(z=>z.type!==\'medical\'); const z=Zs[Math.floor(Math.random()*Zs.length)];\n  emg={x:z.x+z.w/2,y:z.y+z.h+2,trail:[],t0:performance.now(),target:null}; b.className=\'danger on\'; b.textContent=\'🚨 응급 해제\'; sim=true; $(\'bPlay\').textContent=\'⏸ 시뮬레이션 정지\'; }\nfunction setTime(h){ tHour=h; $(\'tSl\').value=h; $(\'tTxt\').textContent=h+\':00\'; $(\'tDesc\').textContent=descT(h); }\nfunction togTl(){ const b=$(\'bTl\'); if(tlTimer){clearInterval(tlTimer);tlTimer=null;b.textContent=\'▶ 재생\';} else { b.textContent=\'⏸ 일시정지\'; tlTimer=setInterval(()=>{ let n=tHour+1; if(n>20)n=10; setTime(n); },2500); } }\nwindow.addEventListener(\'resize\',resize);\nsetTime(14); resize(); initR3(); setView(is3d&&!!R3); setMode(\'after\'); resize(); requestAnimationFrame(loop);\n</script></body></html>\n'
 
 
 def build_twin_html(result: dict) -> str:
@@ -1248,7 +897,7 @@ def build_twin_html(result: dict) -> str:
         detail=dict(t_max=result["detail"]["t_max"], risk_zones=result["detail"]["risk_zones"]),
         before_detail=dict(t_max=result["before_detail"]["t_max"], risk_zones=result["before_detail"]["risk_zones"]),
     )
-    return TWIN_TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+    return TWIN_TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"))
 
 # ===== REPORT =====
 
@@ -1269,7 +918,7 @@ def build_markdown(r: dict) -> str:
           f"- 예산 {p['budget']:,}만원 (예상 시설 비용 {r['cost']['total']:,.0f}만원)", ""]
     L += ["## 2. 최적화 요약",
           f"- 생성·평가한 배치안 {r['stats']['generated']:,}개 (무작위 {r['stats']['randomly']:,} + 변이 {r['stats']['mutated']:,})",
-          f"- 파레토 최적해 {r['stats']['pareto']}개 중 가중 종합점수 최고안 선정: **{r['total']:.1f}점** (설계 전 {r['before_total']:.1f}점)", ""]
+          f"- 파레토 최적해 {r['stats']['pareto']}개 중 가중 종합점수 배치안 평가: **{r['total']:.1f}점** (설계 전 {r['before_total']:.1f}점)", ""]
     L += ["| 평가 항목 | 가중치 | 설계 전 | 설계 후 | 등급 |", "|---|---|---|---|---|"]
     for k in OBJECTIVES:
         L.append(f"| {OBJ_LABEL[k]} | {r['weights'][k] * 100:.0f}% | {r['before_scores'][k]:.0f} | {r['scores'][k]:.0f} | {grade(r['scores'][k])} |")
@@ -1520,6 +1169,220 @@ st.markdown("""
 .wf .ar{align-self:center;color:#94a3b8;font-weight:900}
 </style>""", unsafe_allow_html=True)
 
+
+FACILITY_CATALOG = ['방송장비 배치', '흡연장', '수유실', '비상구', '안전관리본부', '쓰레기통', '분실물보관소', '안내데스크', '사회적 약자 우선 부스', '주차장', '무대 대기실', '스태프룸', '음향조정실', '장비창고', '충전공간', '미아보호소', '팝업장비 배치', '책상', '테이블', '의자', '파라솔', '천막', '알림막', '깃발', '연단', '가림막', '전광판', '키오스크', '포토부스', '체험부스', '푸드트럭', '플리마켓부스', '분리수거함', '종합조정실', '방송실', '경비실', '응급처치소', '화장실']
+
+# AI/API and direct editing extension
+import copy
+import os
+import pathlib
+import urllib.request
+import urllib.error
+import uuid
+
+
+def ai_request(text, result, endpoint, model, api_key):
+    """User-configured Chat Completions-compatible API. Never executes generated code."""
+    if not endpoint.startswith('https://'):
+        raise ValueError('API 주소는 https://로 입력하세요.')
+    if not api_key or not model:
+        raise ValueError('API 키와 모델 이름을 입력하세요.')
+    snapshot = dict(params=result['params'], zones=[dict(id=z['id'], name=z['name'], type=z['type'],
+        x=z['x'], y=z['y'], width_m=z['w']*result['mpu']/1.35,
+        depth_m=z['h']*result['mpu']/1.35, shape=z.get('shape','rect')) for z in result['zones']])
+    instructions = '''You are an event layout assistant. Return ONLY a JSON object with summary (Korean) and operations (list, max 30).
+Allowed operations:
+{"op":"update","id":existing_id,"width_m":number,"depth_m":number,"x":number,"y":number,"shape":"rect|ellipse|L","name":"name"}
+{"op":"add","type":"stage|food|booth|rest|medical|info|restroom|custom","name":"name","width_m":number,"depth_m":number,"shape":"rect|ellipse|L"}
+{"op":"delete","id":existing_id}
+Coordinates x,y are virtual units in 160x100, NOT meters. width_m/depth_m are meters. Update only fields requested, keep all unrelated items.
+Use existing IDs, never infer ID by index. If placement unspecified on add omit x/y. If request vague recommend sensible dimensions. Circular stage = ellipse with equal dimensions. A request to double area multiplies both dimensions by sqrt(2).
+No code, no arbitrary fields. Facility safety metrics are approximate; do not promise safety. If unsupported return operations:[] and explain. Event conditions cannot be changed through these operations; explain that sidebar controls them.'''
+    body = dict(model=model, messages=[dict(role='system',content=instructions),
+        dict(role='user',content=json.dumps(dict(current=snapshot,request=text),ensure_ascii=False))],
+        response_format={'type':'json_object'})
+    req = urllib.request.Request(endpoint, data=json.dumps(body).encode(), method='POST',
+        headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            raw = response.read(2_000_001)
+        if len(raw)>2_000_000: raise ValueError('API 응답이 너무 큽니다.')
+        payload=json.loads(raw)
+        content=payload['choices'][0]['message']['content']
+        proposal=json.loads(content)
+    except urllib.error.HTTPError as e:
+        raise ValueError(f'API 요청 실패 (HTTP {e.code}). 주소·키·모델 및 JSON 응답 지원 여부를 확인하세요.') from None
+    except (KeyError,TypeError,json.JSONDecodeError):
+        raise ValueError('API가 지정된 JSON 형식으로 응답하지 않았습니다.') from None
+    if not isinstance(proposal,dict) or not isinstance(proposal.get('operations'),list):
+        raise ValueError('응답에 operations 목록이 없습니다.')
+    if len(proposal['operations'])>30: raise ValueError('한 번에 30개 명령까지 가능합니다.')
+    return proposal
+
+
+def edit_number(value, low, high):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
+        raise ValueError(f'숫자는 {low}~{high} 범위여야 합니다.')
+    return float(value)
+
+
+def validate_edited(zones, result):
+    if not 2<=len(zones)<=80: raise ValueError('시설은 2~80개여야 합니다.')
+    if not any(z['type']=='medical' for z in zones): raise ValueError('마지막 응급의료센터는 삭제할 수 없습니다.')
+    if not any(z['type']!='medical' for z in zones): raise ValueError('일반 시설이 최소 하나 필요합니다.')
+    if len({z['id'] for z in zones})!=len(zones): raise ValueError('시설 ID가 중복되었습니다.')
+    sh=shape_info(result['params'].get('shape',DEFAULT_SHAPE))
+    rows=[]
+    for z in zones:
+        for key,lo,hi in [('x',0,160),('y',0,100),('w',1,150),('h',1,95)]:
+            edit_number(z[key],lo,hi)
+        if z.get('shape','rect') not in ('rect','ellipse','L'): raise ValueError('지원하지 않는 모양입니다.')
+        # Conservative bounding boxes for all shapes.
+        if not _valid(z['x'],z['y'],z['w'],z['h'],np.array(rows).reshape(-1,4),np.ones(len(rows),bool),
+                      [(g['x'],g['y']) for g in result['gates']],sh):
+            raise ValueError(f"{z['name']}: 외곽·시설 간 통로·출입구 공간을 침범합니다. 위치나 크기를 조정하세요.")
+        rows.append([z[k] for k in ('x','y','w','h')])
+
+
+def proposal_zones(proposal,result):
+    zones=copy.deepcopy(result['zones'])
+    for op in proposal['operations']:
+        if not isinstance(op,dict): raise ValueError('명령은 객체여야 합니다.')
+        action=op.get('op')
+        if action not in ('add','update','delete'): raise ValueError('지원하지 않는 명령입니다.')
+        if action=='add':
+            typ=op.get('type','custom')
+            if typ not in ZONE_META: raise ValueError('지원하지 않는 시설 종류입니다.')
+            meta=ZONE_META[typ]
+            z=dict(id=max([q['id'] for q in zones]+[-1])+1,type=typ,name=str(op.get('name',meta['label']))[:60],
+                color=meta['color'],icon=meta['icon'],ht=meta['ht'],attract=meta['attract'],w=8,h=6,shape='rect')
+            zones.append(z)
+        else:
+            candidates=[q for q in zones if q['id']==op.get('id')]
+            if len(candidates)!=1: raise ValueError('대상 시설 ID를 찾을 수 없습니다.')
+            z=candidates[0]
+            if action=='delete': zones.remove(z); continue
+        for key,out in [('width_m','w'),('depth_m','h')]:
+            if key in op: z[out]=edit_number(op[key],1,150)*1.35/result['mpu']
+        for key in ('x','y'):
+            if key in op: z[key]=edit_number(op[key],0,160 if key=='x' else 100)
+        if 'shape' in op: z['shape']=op['shape']
+        if 'name' in op: z['name']=str(op['name'])[:60]
+        if action=='add' and ('x' not in op or 'y' not in op):
+            found=False
+            for yy in np.arange(5,95,2):
+                for xx in np.arange(5,155,2):
+                    z.update(x=float(xx),y=float(yy))
+                    try: validate_edited(zones,result); found=True; break
+                    except ValueError: pass
+                if found: break
+            if not found: raise ValueError('새 시설을 넣을 빈 공간이 없습니다. 크기를 줄여 주세요.')
+    validate_edited(zones,result)
+    return zones
+
+
+def edited_result(result,zones):
+    validate_edited(zones,result)
+    r=copy.deepcopy(result); r['zones']=copy.deepcopy(zones)
+    L=np.array([[z[k] for k in ('x','y','w','h')] for z in zones])
+    ctx=make_ctx(zones,r['params'],r['mpu'],r['gates'],shape_info(r['params'].get('shape',DEFAULT_SHAPE)))
+    sc,det=evaluate(L,ctx,detail=True)
+    r['detail']=det; r['scores']={k:float(sc[i]) for i,k in enumerate(OBJECTIVES)}
+    r['total']=sum(r['weights'][k]*r['scores'][k] for k in OBJECTIVES)
+    r['zone_sizes']=[dict(name=z['name'],type=ZONE_META[z['type']]['label'],w_m=round(z['w']*r['mpu']/1.35,2),h_m=round(z['h']*r['mpu']/1.35,2)) for z in zones]
+    # Preserve before comparison. Recompute evidence, discard optimization claims after direct edits.
+    old={(e['obj'],e['label']):e for e in r['evidence']}
+    r['evidence']=[]
+    for s in det['sub']:
+        e=copy.deepcopy(old[(s['obj'],s['label'])]); e.update(v_after=s['disp'],sub_after=s['sub']); r['evidence'].append(e)
+    r['formulas']={k:' + '.join(f"{e['w']:.2f}×{e['sub_after']*100:.0f}" for e in r['evidence'] if e['obj']==k)+f" = {r['scores'][k]:.1f}점" for k in OBJECTIVES}
+    r['total_formula']=' + '.join(f"{r['weights'][k]:.2f}×{r['scores'][k]:.0f}" for k in OBJECTIVES)+f" = {r['total']:.1f}점"
+    r['xai']=dict(contrib=[dict(key=k,label=OBJ_LABEL[k],weight=r['weights'][k],score=r['scores'][k],contribution=r['weights'][k]*r['scores'][k],pct_rank=0,vs_mean=0,base=r['before_scores'][k]) for k in OBJECTIVES],
+        reasons=['직접 편집한 배치로 점수를 다시 계산했습니다. 기존 후보군 순위와 배치안 평가 근거는 적용하지 않습니다.'],zone_reasons=[],alternatives=[])
+    r['cloud']=[]
+    r['stats'].update(generated=0,randomly=0,mutated=0,pareto=0,rank_pct=0,zones=len(zones))
+    r['cost']['total']=float(sum((800+r['params']['visitors']*.15) if z['type']=='stage' else COST[z['type']] for z in zones))
+    r['notes']=['직접 편집한 설계입니다. 점수는 다시 계산했지만 최적화는 수행하지 않았습니다. 모양은 시각적으로 반영되며, 밀집도·충돌 계산은 외접 직사각형 기준입니다. 비용은 기존 종류별 단가의 단순 추정이며 크기·모양 변경 비용은 반영하지 않습니다.']
+    if r['cost']['total']>r['cost']['budget']: r['notes'].append('예상 비용이 예산을 초과합니다.')
+    return r
+
+
+def save_edit(result,zones,label):
+    res=edited_result(result,zones)
+    ss.history.append(dict(label=f'v{len(ss.history)+1} · {label}',result=res,sig=make_sig()))
+    ss.view=len(ss.history)-1
+    ss['_next_hist']=ss.view
+
+
+def render_ai_editor(R):
+    st.caption('API 키는 비밀번호 칸 또는 배포 환경의 EVENT_AI_API_KEY로 설정합니다. 요청 시 행사 설정과 시설 목록이 입력한 API로 전송됩니다.')
+    with st.expander('AI API 연결 설정',expanded=False):
+        endpoint=st.text_input('Chat Completions API 전체 주소',value=os.environ.get('EVENT_AI_ENDPOINT',''),placeholder='https://…/v1/chat/completions',key='eo_endpoint')
+        model=st.text_input('사용할 모델 이름',value=os.environ.get('EVENT_AI_MODEL',''),key='eo_model')
+        key=st.text_input('API 키',type='password',key='eo_api_key') or os.environ.get('EVENT_AI_API_KEY','')
+    for who,msg in ss.chat[-6:]:
+        st.chat_message('assistant' if who=='ai' else 'user').write(msg)
+    cmd=st.chat_input('예: 무대를 가로 15m 세로 10m의 타원형으로 바꾸고 포토존을 추가해줘')
+    if cmd:
+        ss.chat.append(('user',cmd))
+        try:
+            with st.spinner('AI가 변경안을 작성하고 있습니다…'):
+                proposal=ai_request(cmd,R,endpoint,model,key)
+                zones=proposal_zones(proposal,R)
+            ss['_ai_proposal']=dict(proposal=proposal,zones=zones,base=ss.view)
+        except Exception as e:
+            st.error(str(e) if isinstance(e,ValueError) else 'AI 요청에 실패했습니다. 연결 설정과 네트워크를 확인하세요.')
+    pending=ss.get('_ai_proposal')
+    if pending:
+        st.info(str(pending['proposal'].get('summary','AI 변경안')))
+        st.json(pending['proposal']['operations'],expanded=False)
+        a,b=st.columns(2)
+        if a.button('변경안 적용',type='primary'):
+            try:
+                if pending['base']!=ss.view: raise ValueError('설계가 바뀌었습니다. 다시 요청해 주세요.')
+                save_edit(R,pending['zones'],'AI 명령 반영')
+                ss.chat.append(('ai',str(pending['proposal'].get('summary','변경했습니다.'))))
+                del ss['_ai_proposal']; st.rerun()
+            except ValueError as e: st.error(str(e))
+        if b.button('변경안 취소'):
+            del ss['_ai_proposal']; st.rerun()
+    st.markdown('##### 🧰 사진 속 시설 추가')
+    st.caption('개별 시설의 기본 크기는 편집용 예시입니다. 추가 후 3D에서 크기를 조절하세요. 배치 불가능한 공간에는 추가하지 않습니다.')
+    with st.form('facility_catalog'):
+        chosen=st.multiselect('추가할 시설',FACILITY_CATALOG)
+        count=st.number_input('각 시설 개수',1,10,1)
+        width=st.number_input('가로(m)',1.0,40.0,3.0,0.5)
+        depth=st.number_input('세로(m)',1.0,40.0,3.0,0.5)
+        if st.form_submit_button('선택 시설 추가'):
+            try:
+                ops=[]
+                for name in chosen:
+                    typ='medical' if name in ('응급처치소','안전관리본부') else ('restroom' if name=='화장실' else ('info' if name=='안내데스크' else 'custom'))
+                    ops.extend(dict(op='add',type=typ,name=name,width_m=width,depth_m=depth) for _ in range(int(count)))
+                if not ops: raise ValueError('추가할 시설을 선택하세요.')
+                if len(ops)>30: raise ValueError('한 번에 30개까지 추가하세요.')
+                save_edit(R,proposal_zones({'operations':ops},R),'시설 추가');st.rerun()
+            except ValueError as e: st.error(str(e))
+    st.markdown('##### 🧊 3D 화면에서 직접 편집')
+    st.caption('편집 모드 → 부스 클릭 → 몸체 드래그로 이동, 노란 손잡이로 크기 조절. 빈 바닥 드래그는 시점 회전입니다. 저장해야 점수·리포트에 반영됩니다.')
+    component=components.declare_component('event_on_3d_editor',path=str(pathlib.Path(__file__).parent/'event_editor'))
+    value=component(html=build_twin_html(R),revision=ss.view,key='eo_3d_canvas')
+    if isinstance(value,dict) and value.get('token')!=ss.get('_last_edit_token'):
+        ss['_last_edit_token']=value.get('token')
+        try:
+            if value.get('revision')!=ss.view: raise ValueError('오래된 편집 요청입니다.')
+            edited=value.get('zones',[])
+            known={z['id']:z for z in R['zones']}
+            merged=[]
+            for z in edited:
+                if z.get('id') not in known: raise ValueError('알 수 없는 시설 ID입니다.')
+                q=copy.deepcopy(known[z['id']])
+                for k in ('x','y','w','h'): q[k]=z[k]
+                merged.append(q)
+            save_edit(R,merged,'마우스 편집'); st.rerun()
+        except (ValueError,KeyError,TypeError) as e: st.error('저장하지 못했습니다: '+str(e))
+
+
 ss = st.session_state
 ss.setdefault("custom", [])
 ss.setdefault("pins", {})
@@ -1528,6 +1391,8 @@ ss.setdefault("history", [])
 ss.setdefault("result", None)
 ss.setdefault("view", None)
 ss.setdefault("pending", None)
+if "_next_hist" in ss:
+    ss["hist_sel"] = ss.pop("_next_hist")
 
 # ----------------------------------------------------------------------------- 사이드바 입력
 with st.sidebar:
@@ -1679,24 +1544,10 @@ with tab_main:
 
         # ---- AI 어시스턴트
         st.markdown("##### 🤖 AI 어시스턴트 — 말로 배치를 바꾸거나 부스를 추가하세요")
-        box = st.container(height=130)
-        for who, msg in ss.chat[-6:]:
-            box.chat_message("assistant" if who == "ai" else "user").write(msg)
-        cmd = st.chat_input("예: 무대를 우측으로 옮기고 응급의료센터를 중앙에 배치해줘 / 포토존 2개 추가")
-        if cmd:
-            ss.chat.append(("user", cmd))
-            parsed = parse_command(cmd)
-            if not parsed["pins"] and not parsed["extras"]:
-                ss.chat.append(("ai", "배치 지시를 이해하지 못했습니다. '무대 우측', '응급의료센터 중앙', '푸드트럭 3개 추가' 형태로 말씀해 주세요."))
-            else:
-                ss.pins.update(parsed["pins"])
-                ss.custom.extend(parsed["extras"])
-                ss.chat.append(("ai", " ".join(parsed["msgs"]) + " 반영하여 다시 최적화합니다."))
-                ss.pending = "AI 어시스턴트: " + cmd[:18]
-            st.rerun()
+        render_ai_editor(R)
 
         # ---- 디지털 트윈
-        components.html(build_twin_html(R), height=1330, scrolling=True)
+        # The existing digital twin is now rendered in the bidirectional 3D editor above.
 
         # ---- 평가/비교
         c_a, c_b, c_c = st.columns([1.1, 1.1, 1])
@@ -1715,7 +1566,7 @@ with tab_main:
             ], columns=["지표", "설계 전", "설계 후"]), hide_index=True, use_container_width=True)
         with c_c:
             st.markdown("##### 📄 요약")
-            st.info(f"{R['stats']['generated']:,}개 배치안 중 종합 {R['total']:.1f}점 최적안 선정. "
+            st.info(f"{R['stats']['generated']:,}개 배치안 중 종합 {R['total']:.1f}점 배치안 평가. "
                     f"응급 최대 도달 {fmt_sec(d['t_max'])}, 위험구역 {d['risk_zones']}개소.")
 
         with st.expander("📐 점수는 어떻게 계산됐나요? (산출 근거 보기)"):
@@ -1730,7 +1581,7 @@ with tab_wf:
 <div class="st"><div class="n">3</div><b>수천 개 배치안 생성</b><span>무작위 샘플링 + 상위안 변이</span></div><div class="ar">›</div>
 <div class="st"><div class="n">4</div><b>군중 시뮬레이션</b><span>이동 동선·혼잡도 예측</span></div><div class="ar">›</div>
 <div class="st"><div class="n">5</div><b>다목적 최적화</b><span>안전·동선·접근·혼잡·공간</span></div><div class="ar">›</div>
-<div class="st"><div class="n">6</div><b>최적안 선정 + XAI</b><span>설계 이유 설명</span></div><div class="ar">›</div>
+<div class="st"><div class="n">6</div><b>배치안 평가 + XAI</b><span>설계 이유 설명</span></div><div class="ar">›</div>
 <div class="st"><div class="n">7</div><b>결과 제공</b><span>배치도·리포트·전/후 비교</span></div>
 </div>""", unsafe_allow_html=True)
     if ss.history:
@@ -1742,8 +1593,11 @@ with tab_wf:
         c[2].metric("파레토 최적해", f"{s['pareto']}개")
         c[3].metric("배치 구역 수", f"{s['zones']}개")
         st.markdown("##### 후보 배치안 분포 (점이 위·오른쪽일수록 우수)")
-        st.scatter_chart(pd.DataFrame(R["cloud"]).rename(columns={"safety": "비상 안전성", "cong": "혼잡도 분산"}),
-                         x="비상 안전성", y="혼잡도 분산", color="total", height=340)
+        if R["cloud"]:
+            st.scatter_chart(pd.DataFrame(R["cloud"]).rename(columns={"safety": "비상 안전성", "cong": "혼잡도 분산"}),
+                             x="비상 안전성", y="혼잡도 분산", color="total", height=340)
+        else:
+            st.caption("직접 편집한 설계에는 후보군 순위와 분포를 표시하지 않습니다.")
         st.caption("가중치: " + " · ".join(f"{OBJ_LABEL[k]} {R['weights'][k] * 100:.0f}%" for k in OBJECTIVES))
 
 # ----------------------------------------------------------------------------- XAI
